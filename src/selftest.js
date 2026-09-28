@@ -295,180 +295,298 @@ export async function runSelfTest({ api, app, ui }) {
     });
 
     await check('drive:forward', async () => {
-      app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
-      await waitSim(1.5, 6000);
-      const rest = api.carPosition();
-      assert(rest.y >= 0.6 && rest.y <= 0.85, `resting height ${rest.y} not in [0.6, 0.85]`);
+      app.internals.setRender(false);
+      try {
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await waitSim(1.5, 6000);
+        const rest = api.carPosition();
+        assert(rest.y >= 0.6 && rest.y <= 0.85, `resting height ${rest.y} not in [0.6, 0.85]`);
 
-      dispatchKey('keydown', 'KeyW');
-      await waitSim(2.0, 8000);
-      dispatchKey('keyup', 'KeyW');
+        dispatchKey('keydown', 'KeyW');
+        await waitSim(2.0, 8000);
 
-      const moved = api.carPosition();
-      assert(SPAWN.z - moved.z >= 0.5, `z did not decrease by >= 0.5: ${SPAWN.z} -> ${moved.z}`);
-      assert(Math.abs(moved.x) < 1, `x drifted too far: ${moved.x}`);
+        const moved = api.carPosition();
+        assert(SPAWN.z - moved.z >= 0.5, `z did not decrease by >= 0.5: ${SPAWN.z} -> ${moved.z}`);
+        assert(Math.abs(moved.x) < 1, `x drifted too far: ${moved.x}`);
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        app.internals.setRender(true);
+      }
     });
 
     const st = () => app.internals.driveState();
 
-    await check('drive:hold', async () => {
-      app.internals.placeCarAt(45, -46, 0, -1);
-      await waitSim(1.0, 5000);
-      assert(st().input.forward === false, `input.forward should be false before the hold, was ${st().input.forward}`);
-
+    // Ticks until pred(driveState) holds; returns the physics seconds it took, or null once maxSec of physics
+    // time has passed. Pushes one sample per tick to `out`. Throws like waitSim after capMs of wall time.
+    async function simUntil(pred, maxSec, capMs, out) {
       const t0 = performance.now();
-      dispatchKey('keydown', 'KeyW');
       const s0 = app.internals.simTime();
-
-      const probes = [];
-      let noiseOn = true;
-      let noiseTimer = null;
-
-      function up() {
-        if (!noiseOn) return;
-        dispatchKey('keyup', 'KeyW');
-        noiseTimer = setTimeout(down, 60);
-      }
-      function down() {
-        if (!noiseOn) return;
-        probes.push(st().input.forward);
-        dispatchKey('keydown', 'KeyW');
-        noiseTimer = setTimeout(up, 40);
-      }
-      noiseTimer = setTimeout(up, 100);
-
-      const samples = [];
-      let endPos;
-      let tUp = 0;
-      let heldAfterUp = false;
-      try {
-        while (app.internals.simTime() - s0 < 4.0) {
-          if (performance.now() - t0 >= 15000) {
-            throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
-          }
-          await nextTick();
-          const s = st();
-          const pos = api.carPosition();
-          samples.push({ t: (app.internals.simTime() - s0) * 1000, v: s.speed, fwd: s.input.forward, tilt: s.tilt, y: pos.y });
-        }
-        endPos = api.carPosition();
-      } finally {
-        noiseOn = false;
-        clearTimeout(noiseTimer);
-        dispatchKey('keyup', 'KeyW');
-        tUp = performance.now();
-        heldAfterUp = st().input.forward;
-      }
-
-      let now = performance.now();
-      while (st().input.forward && now - tUp < 400) {
-        await nextTick();
-        now = performance.now();
-      }
-      const releaseMs = now - tUp;
-
-      const v0 = st().speed;
-      const coast = [];
-      const sc0 = app.internals.simTime();
-      const tc0 = performance.now();
-      while (app.internals.simTime() - sc0 < 0.5) {
-        if (performance.now() - tc0 >= 5000) {
-          throw new Error(`physics advanced only ${(app.internals.simTime() - sc0).toFixed(2)} s in 5000 ms`);
-        }
-        await nextTick();
+      for (;;) {
         const s = st();
         const pos = api.carPosition();
-        coast.push({ tilt: s.tilt, y: pos.y });
+        const el = app.internals.simTime() - s0;
+        out.push({ t: el, v: s.speed, fwdKey: s.input.forward, tilt: s.tilt, x: pos.x, y: pos.y, z: pos.z });
+        if (pred(s)) return el;
+        if (el >= maxSec) return null;
+        if (performance.now() - t0 >= capMs) throw new Error(`physics advanced only ${el.toFixed(2)} s in ${capMs} ms`);
+        await nextTick();
       }
-      const v1 = st().speed;
+    }
 
-      const h0 = st().heading;
-      dispatchKey('keydown', 'KeyA');
-      const steer = [];
-      let h1;
+    await check('drive:hold', async () => {
+      app.internals.setRender(false);
       try {
-        const ss0 = app.internals.simTime();
-        const ts0 = performance.now();
-        while (app.internals.simTime() - ss0 < 0.6) {
-          if (performance.now() - ts0 >= 5000) {
-            throw new Error(`physics advanced only ${(app.internals.simTime() - ss0).toFixed(2)} s in 5000 ms`);
+        app.internals.placeCarAt(45, -46, 0, -1);
+        await waitSim(1.0, 5000);
+        assert(st().input.forward === false, `input.forward should be false before the hold, was ${st().input.forward}`);
+
+        const t0 = performance.now();
+        dispatchKey('keydown', 'KeyW');
+        const s0 = app.internals.simTime();
+
+        const probes = [];
+        let noiseOn = true;
+        let noiseTimer = null;
+
+        function up() {
+          if (!noiseOn) return;
+          dispatchKey('keyup', 'KeyW');
+          noiseTimer = setTimeout(down, 60);
+        }
+        function down() {
+          if (!noiseOn) return;
+          probes.push(st().input.forward);
+          dispatchKey('keydown', 'KeyW');
+          noiseTimer = setTimeout(up, 40);
+        }
+        noiseTimer = setTimeout(up, 100);
+
+        const samples = [];
+        let endPos;
+        let tUp = 0;
+        let heldAfterUp = false;
+        try {
+          while (app.internals.simTime() - s0 < 4.0) {
+            if (performance.now() - t0 >= 15000) {
+              throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+            }
+            await nextTick();
+            const s = st();
+            const pos = api.carPosition();
+            samples.push({ t: (app.internals.simTime() - s0) * 1000, v: s.speed, fwd: s.input.forward, tilt: s.tilt, y: pos.y });
+          }
+          endPos = api.carPosition();
+        } finally {
+          noiseOn = false;
+          clearTimeout(noiseTimer);
+          dispatchKey('keyup', 'KeyW');
+          tUp = performance.now();
+          heldAfterUp = st().input.forward;
+        }
+
+        let now = performance.now();
+        while (st().input.forward && now - tUp < 400) {
+          await nextTick();
+          now = performance.now();
+        }
+        const releaseMs = now - tUp;
+
+        const v0 = st().speed;
+        const coast = [];
+        const sc0 = app.internals.simTime();
+        const tc0 = performance.now();
+        while (app.internals.simTime() - sc0 < 0.5) {
+          if (performance.now() - tc0 >= 5000) {
+            throw new Error(`physics advanced only ${(app.internals.simTime() - sc0).toFixed(2)} s in 5000 ms`);
           }
           await nextTick();
           const s = st();
           const pos = api.carPosition();
-          steer.push({ tilt: s.tilt, y: pos.y });
+          coast.push({ tilt: s.tilt, y: pos.y });
         }
-        h1 = st().heading;
-      } finally {
-        dispatchKey('keyup', 'KeyA');
-      }
+        const v1 = st().speed;
 
-      assert(
-        probes.length >= 30 && probes.every((p) => p === true),
-        `A1: probes.length=${probes.length}, allTrue=${probes.every((p) => p === true)}`
-      );
-      assert(
-        samples.length >= 40 && samples.every((s) => s.fwd === true),
-        `A2: samples.length=${samples.length}, allFwd=${samples.every((s) => s.fwd === true)}`
-      );
+        const h0 = st().heading;
+        dispatchKey('keydown', 'KeyA');
+        const steer = [];
+        let h1;
+        try {
+          const ss0 = app.internals.simTime();
+          const ts0 = performance.now();
+          while (app.internals.simTime() - ss0 < 0.6) {
+            if (performance.now() - ts0 >= 5000) {
+              throw new Error(`physics advanced only ${(app.internals.simTime() - ss0).toFixed(2)} s in 5000 ms`);
+            }
+            await nextTick();
+            const s = st();
+            const pos = api.carPosition();
+            steer.push({ tilt: s.tilt, y: pos.y });
+          }
+          h1 = st().heading;
+        } finally {
+          dispatchKey('keyup', 'KeyA');
+        }
 
-      let worstStep = 0;
-      for (let i = 1; i < samples.length; i++) {
-        const drop = samples[i - 1].v - samples[i].v;
-        if (drop > worstStep) worstStep = drop;
         assert(
-          samples[i].v >= samples[i - 1].v - 0.1,
-          `A3: speed dropped ${drop.toFixed(2)} m/s at t=${samples[i].t.toFixed(0)}ms (${samples[i - 1].v.toFixed(2)} -> ${samples[i].v.toFixed(2)})`
+          probes.length >= 30 && probes.every((p) => p === true),
+          `A1: probes.length=${probes.length}, allTrue=${probes.every((p) => p === true)}`
         );
+        assert(
+          samples.length >= 40 && samples.every((s) => s.fwd === true),
+          `A2: samples.length=${samples.length}, allFwd=${samples.every((s) => s.fwd === true)}`
+        );
+
+        let worstStep = 0;
+        for (let i = 1; i < samples.length; i++) {
+          const drop = samples[i - 1].v - samples[i].v;
+          if (drop > worstStep) worstStep = drop;
+          assert(
+            samples[i].v >= samples[i - 1].v - 0.1,
+            `A3: speed dropped ${drop.toFixed(2)} m/s at t=${samples[i].t.toFixed(0)}ms (${samples[i - 1].v.toFixed(2)} -> ${samples[i].v.toFixed(2)})`
+          );
+        }
+
+        const maxV = samples.reduce((m, s) => Math.max(m, s.v), -Infinity);
+        assert(maxV <= VEHICLE.maxSpeed + 0.2, `A4: max speed ${maxV.toFixed(2)} > ${(VEHICLE.maxSpeed + 0.2).toFixed(2)}`);
+
+        const lateSamples = samples.filter((s) => s.t >= 3500);
+        assert(lateSamples.length >= 3, `A5: only ${lateSamples.length} samples with t >= 3500`);
+        const winMin = Math.min(...lateSamples.map((s) => s.v));
+        assert(winMin >= 0.85 * VEHICLE.maxSpeed, `A5: late-window min speed ${winMin.toFixed(2)} < ${(0.85 * VEHICLE.maxSpeed).toFixed(2)}`);
+        const lastLate = lateSamples[lateSamples.length - 1].v;
+        assert(lastLate >= 0.9 * VEHICLE.maxSpeed, `A5: last sample speed ${lastLate.toFixed(2)} < ${(0.9 * VEHICLE.maxSpeed).toFixed(2)}`);
+
+        const dist = -46 - endPos.z;
+        assert(dist >= 30, `A6: distance ${dist.toFixed(2)} m < 30 m`);
+        assert(Math.abs(endPos.x - 45) <= 1.5, `A6: x drift ${(endPos.x - 45).toFixed(2)} exceeds 1.5`);
+
+        const holdTilt = samples.reduce((m, s) => Math.max(m, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll)), 0);
+        assert(holdTilt <= 0.5, `A7: max hold |tilt| ${holdTilt.toFixed(2)} deg > 0.5`);
+
+        assert(heldAfterUp === true, `A8: heldAfterUp was ${heldAfterUp}`);
+
+        assert(
+          releaseMs >= VEHICLE.keyReleaseDebounceMs - 5 && releaseMs <= VEHICLE.keyReleaseDebounceMs + 2500,
+          `A9: releaseMs ${releaseMs.toFixed(2)} outside [${VEHICLE.keyReleaseDebounceMs - 5}, ${VEHICLE.keyReleaseDebounceMs + 2500}]`
+        );
+
+        const coastDrop = v0 - v1;
+        assert(coastDrop >= 0.3 && coastDrop <= 2.5, `A10: coastDrop ${coastDrop.toFixed(2)} outside [0.3, 2.5]`);
+
+        assert(coast.length >= 5, `A11: coast.length=${coast.length} < 5`);
+        const coastTilt = coast.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
+        assert(coastTilt <= 0.5, `A11: max coast |tilt| ${coastTilt.toFixed(2)} deg > 0.5`);
+
+        assert(steer.length >= 5, `A12: steer.length=${steer.length} < 5`);
+        const steerTilt = steer.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
+        assert(steerTilt <= 0.5, `A12: max steer |tilt| ${steerTilt.toFixed(2)} deg > 0.5`);
+
+        const turnDot = Math.max(-1, Math.min(1, h0.x * h1.x + h0.z * h1.z));
+        const turnDeg = Math.acos(turnDot) * (180 / Math.PI);
+        assert(turnDeg >= 5, `A13: turned only ${turnDeg.toFixed(2)} deg`);
+
+        const allY = [...samples.map((s) => s.y), ...coast.map((c) => c.y), ...steer.map((c) => c.y)];
+        const yMin = Math.min(...allY);
+        const yMax = Math.max(...allY);
+        assert(yMin >= 0.55 && yMax <= 0.95, `A14: y range [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] outside [0.55, 0.95]`);
+
+        const maxTilt = Math.max(holdTilt, coastTilt, steerTilt);
+        const vEnd = samples.length ? samples[samples.length - 1].v : 0;
+        return `vEnd=${vEnd.toFixed(2)} winMin=${winMin.toFixed(2)} worstStep=${worstStep.toFixed(2)} dist=${dist.toFixed(2)} maxTilt=${maxTilt.toFixed(2)} turn=${turnDeg.toFixed(2)} yMin=${yMin.toFixed(2)} yMax=${yMax.toFixed(2)} gaps=${probes.length} releaseMs=${releaseMs.toFixed(2)} coastDrop=${coastDrop.toFixed(2)}`;
+      } finally {
+        app.internals.setRender(true);
       }
+    });
 
-      const maxV = samples.reduce((m, s) => Math.max(m, s.v), -Infinity);
-      assert(maxV <= VEHICLE.maxSpeed + 0.2, `A4: max speed ${maxV.toFixed(2)} > ${(VEHICLE.maxSpeed + 0.2).toFixed(2)}`);
+    await check('drive:brake', async () => {
+      app.internals.setRender(false);
+      try {
+        const brakeF = [];
+        const rev = [];
+        const brakeR = [];
+        const go = [];
 
-      const lateSamples = samples.filter((s) => s.t >= 3500);
-      assert(lateSamples.length >= 3, `A5: only ${lateSamples.length} samples with t >= 3500`);
-      const winMin = Math.min(...lateSamples.map((s) => s.v));
-      assert(winMin >= 0.85 * VEHICLE.maxSpeed, `A5: late-window min speed ${winMin.toFixed(2)} < ${(0.85 * VEHICLE.maxSpeed).toFixed(2)}`);
-      const lastLate = lateSamples[lateSamples.length - 1].v;
-      assert(lastLate >= 0.9 * VEHICLE.maxSpeed, `A5: last sample speed ${lastLate.toFixed(2)} < ${(0.9 * VEHICLE.maxSpeed).toFixed(2)}`);
+        app.internals.placeCarAt(45, -46, 0, -1);
+        await waitSim(1.0, 5000);
+        const b0 = st().input;
+        assert(
+          b0.forward === false && b0.back === false && b0.left === false && b0.right === false,
+          `B0: input not settled: forward=${b0.forward} back=${b0.back} left=${b0.left} right=${b0.right}`
+        );
 
-      const dist = -46 - endPos.z;
-      assert(dist >= 30, `A6: distance ${dist.toFixed(2)} m < 30 m`);
-      assert(Math.abs(endPos.x - 45) <= 1.5, `A6: x drift ${(endPos.x - 45).toFixed(2)} exceeds 1.5`);
+        dispatchKey('keydown', 'KeyW');
+        await waitSim(4.0, 15000);
+        const vS = st().speed;
+        const p0 = api.carPosition();
+        assert(vS >= 0.85 * VEHICLE.maxSpeed, `B1: vStart ${vS.toFixed(2)} < ${(0.85 * VEHICLE.maxSpeed).toFixed(2)}`);
 
-      const holdTilt = samples.reduce((m, s) => Math.max(m, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll)), 0);
-      assert(holdTilt <= 0.5, `A7: max hold |tilt| ${holdTilt.toFixed(2)} deg > 0.5`);
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keydown', 'KeyS');
+        const tF = await simUntil((s) => s.speed <= 1.0, 5.0, 15000, brakeF);
+        const lastF = brakeF[brakeF.length - 1];
+        assert(
+          tF !== null && tF <= 2.5,
+          tF === null ? `B2: still ${lastF.v.toFixed(2)} m/s after 5.0 s` : `B2: stopped only after ${tF.toFixed(2)} s`
+        );
+        const distF = Math.hypot(lastF.x - p0.x, lastF.z - p0.z);
+        assert(distF <= 30, `B3: distF ${distF.toFixed(2)} m > 30 m`);
+        const firstAfter1s = brakeF.find((s) => s.t >= 1.0);
+        const drop1 = vS - (firstAfter1s ? firstAfter1s.v : lastF.v);
+        assert(drop1 >= 6.0, `B4: drop1 ${drop1.toFixed(2)} m/s < 6.0 m/s`);
+        const releasedF = brakeF.filter((s) => s.fwdKey === false);
+        for (let i = 1; i < releasedF.length; i++) {
+          assert(
+            releasedF[i].v <= releasedF[i - 1].v + 0.1,
+            `B5: speed rose from ${releasedF[i - 1].v.toFixed(2)} to ${releasedF[i].v.toFixed(2)} at t=${releasedF[i].t.toFixed(2)}s while braking`
+          );
+        }
 
-      assert(heldAfterUp === true, `A8: heldAfterUp was ${heldAfterUp}`);
+        const tR = await simUntil((s) => s.speed <= -7.0, 4.0, 12000, rev);
+        const lastR = rev[rev.length - 1];
+        assert(tR !== null, `B6: still ${lastR.v.toFixed(2)} m/s after 4.0 s`);
 
-      assert(
-        releaseMs >= VEHICLE.keyReleaseDebounceMs - 5 && releaseMs <= VEHICLE.keyReleaseDebounceMs + 2500,
-        `A9: releaseMs ${releaseMs.toFixed(2)} outside [${VEHICLE.keyReleaseDebounceMs - 5}, ${VEHICLE.keyReleaseDebounceMs + 2500}]`
-      );
+        dispatchKey('keyup', 'KeyS');
+        dispatchKey('keydown', 'KeyW');
+        const tB = await simUntil((s) => s.speed >= -1.0, 3.0, 10000, brakeR);
+        const lastB = brakeR[brakeR.length - 1];
+        assert(
+          tB !== null && tB <= 1.0,
+          tB === null ? `B7: still ${lastB.v.toFixed(2)} m/s after 3.0 s` : `B7: recovered only after ${tB.toFixed(2)} s`
+        );
 
-      const coastDrop = v0 - v1;
-      assert(coastDrop >= 0.3 && coastDrop <= 2.5, `A10: coastDrop ${coastDrop.toFixed(2)} outside [0.3, 2.5]`);
+        const tG = await simUntil((s) => s.speed >= 2.0, 1.5, 6000, go);
+        const lastG = go[go.length - 1];
+        assert(tG !== null, `B8: still ${lastG.v.toFixed(2)} m/s after 1.5 s`);
 
-      assert(coast.length >= 5, `A11: coast.length=${coast.length} < 5`);
-      const coastTilt = coast.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
-      assert(coastTilt <= 0.5, `A11: max coast |tilt| ${coastTilt.toFixed(2)} deg > 0.5`);
+        const allSamples = [...brakeF, ...rev, ...brakeR, ...go];
+        let maxTilt = 0;
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        let xDrift = 0;
+        for (const s of allSamples) {
+          maxTilt = Math.max(maxTilt, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll));
+          yMin = Math.min(yMin, s.y);
+          yMax = Math.max(yMax, s.y);
+          xDrift = Math.max(xDrift, Math.abs(s.x - 45));
+        }
+        assert(maxTilt <= 0.5, `B9: max |tilt| ${maxTilt.toFixed(2)} deg > 0.5`);
+        assert(yMin >= 0.55 && yMax <= 0.95, `B10: y range [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] outside [0.55, 0.95]`);
+        assert(xDrift <= 1.5, `B11: xDrift ${xDrift.toFixed(2)} > 1.5`);
 
-      assert(steer.length >= 5, `A12: steer.length=${steer.length} < 5`);
-      const steerTilt = steer.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
-      assert(steerTilt <= 0.5, `A12: max steer |tilt| ${steerTilt.toFixed(2)} deg > 0.5`);
+        return `vStart=${vS.toFixed(2)} stopF=${tF.toFixed(2)} distF=${distF.toFixed(2)} drop1=${drop1.toFixed(2)} revReach=${tR.toFixed(2)} stopR=${tB.toFixed(2)} goF=${tG.toFixed(2)} maxTilt=${maxTilt.toFixed(2)} yMin=${yMin.toFixed(2)} yMax=${yMax.toFixed(2)} xDrift=${xDrift.toFixed(2)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keyup', 'KeyS');
+        app.internals.setRender(true);
+      }
+    });
 
-      const turnDot = Math.max(-1, Math.min(1, h0.x * h1.x + h0.z * h1.z));
-      const turnDeg = Math.acos(turnDot) * (180 / Math.PI);
-      assert(turnDeg >= 5, `A13: turned only ${turnDeg.toFixed(2)} deg`);
-
-      const allY = [...samples.map((s) => s.y), ...coast.map((c) => c.y), ...steer.map((c) => c.y)];
-      const yMin = Math.min(...allY);
-      const yMax = Math.max(...allY);
-      assert(yMin >= 0.55 && yMax <= 0.95, `A14: y range [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] outside [0.55, 0.95]`);
-
-      const maxTilt = Math.max(holdTilt, coastTilt, steerTilt);
-      const vEnd = samples.length ? samples[samples.length - 1].v : 0;
-      return `vEnd=${vEnd.toFixed(2)} winMin=${winMin.toFixed(2)} worstStep=${worstStep.toFixed(2)} dist=${dist.toFixed(2)} maxTilt=${maxTilt.toFixed(2)} turn=${turnDeg.toFixed(2)} yMin=${yMin.toFixed(2)} yMax=${yMax.toFixed(2)} gaps=${probes.length} releaseMs=${releaseMs.toFixed(2)} coastDrop=${coastDrop.toFixed(2)}`;
+    await check('render:restored', async () => {
+      const n0 = app.internals.renderCount();
+      await frames(3);
+      const n1 = app.internals.renderCount();
+      assert(n1 > n0, `no frame rendered in 3 ticks after the drive checks (renderCount ${n0} -> ${n1})`);
+      return `renders=${n1 - n0}`;
     });
 
     await check('camera:height', async () => {

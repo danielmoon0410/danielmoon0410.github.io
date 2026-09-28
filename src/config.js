@@ -92,6 +92,8 @@ export const VEHICLE = {
   steerRate: 8,
   brakeForce: 1000000,
   idleBrake: 5,
+  counterBrake: 7.5,          // per-wheel brake impulse (N s per step) while W/S opposes the motion: 4 x 7.5 x 60 / 150 kg = 12 m/s^2
+  counterBrakeMinSpeed: 0.5,  // m/s; below this the opposite key drives instead of braking
   flipResetSeconds: 2.5,
   fallResetY: -10,
 };

@@ -72,17 +72,29 @@ export async function runShot({ app, canvas, stationId }) {
     app.internals.snapCamera();
     app.internals.renderOnce();
     const url = canvas.toDataURL(SHOT.mime, SHOT.quality);
-    const car = app.internals.carScreen();
+    // Reference frame: the same camera and scene without the car. build-pdf.ps1 finds the car in the
+    // captured pixels as the difference between the two frames.
+    let refUrl = '';
+    app.internals.setCarVisible(false);
+    try {
+      app.internals.renderOnce();
+      refUrl = canvas.toDataURL(SHOT.mime, SHOT.quality);
+    } finally {
+      app.internals.setCarVisible(true);
+    }
 
-    if (!url.startsWith('data:image/jpeg;base64,')) return fail('no image');
+    if (!url.startsWith('data:image/jpeg;base64,') || !refUrl.startsWith('data:image/jpeg;base64,')) return fail('no image');
 
     pre.textContent = url;
     pre.dataset.width = canvas.width;
     pre.dataset.height = canvas.height;
     pre.dataset.quality = app.quality();
     pre.dataset.uiHidden = uiHidden ? 'true' : 'false';
-    pre.dataset.carX = String(Math.round(car.x));
-    pre.dataset.carY = String(Math.round(car.y));
+    const ref = document.createElement('pre');
+    ref.id = 'shot-ref';
+    ref.hidden = true;
+    ref.textContent = refUrl;
+    document.body.appendChild(ref);
     document.body.dataset.shotStatus = 'done';
     return { status: 'done', detail: '' };
   } catch (err) {

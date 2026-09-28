@@ -116,21 +116,27 @@ export function createVehicle({ scene, world, palette }) {
     vehicle.setSteeringValue(steer, 0);
     vehicle.setSteeringValue(steer, 1);
 
+    const v = speedAlongForward();
     const throttleTarget = input.forward ? 1 : input.back ? -1 : 0;
-    const rampRate = (throttleTarget !== 0 && throttleTarget * throttle >= 0) ? VEHICLE.throttleRise : VEHICLE.throttleFall;
+    // Counter-brake: the pressed direction opposes the motion (S/down rolling forward, W/up rolling backward).
+    const counterBraking = throttleTarget * v < -VEHICLE.counterBrakeMinSpeed;
+    const rampTarget = counterBraking ? 0 : throttleTarget;
+    const rampRate = (rampTarget !== 0 && rampTarget * throttle >= 0) ? VEHICLE.throttleRise : VEHICLE.throttleFall;
     const maxDelta = rampRate * dt;
-    if (throttle < throttleTarget) {
-      throttle = Math.min(throttleTarget, throttle + maxDelta);
-    } else if (throttle > throttleTarget) {
-      throttle = Math.max(throttleTarget, throttle - maxDelta);
+    if (throttle < rampTarget) {
+      throttle = Math.min(rampTarget, throttle + maxDelta);
+    } else if (throttle > rampTarget) {
+      throttle = Math.max(rampTarget, throttle - maxDelta);
     }
 
-    const v = speedAlongForward();
     let engineForce = 0;
-    if (throttle > 0) {
-      engineForce = -VEHICLE.engineForce * throttle * taper(v, VEHICLE.maxSpeed);
-    } else if (throttle < 0) {
-      engineForce = VEHICLE.engineForce * VEHICLE.reverseFactor * -throttle * taper(-v, VEHICLE.maxReverseSpeed);
+    // No drive while counter-braking, or while the throttle still points against the pressed direction.
+    if (!counterBraking && throttle * throttleTarget >= 0) {
+      if (throttle > 0) {
+        engineForce = -VEHICLE.engineForce * throttle * taper(v, VEHICLE.maxSpeed);
+      } else if (throttle < 0) {
+        engineForce = VEHICLE.engineForce * VEHICLE.reverseFactor * -throttle * taper(-v, VEHICLE.maxReverseSpeed);
+      }
     }
     vehicle.applyEngineForce(engineForce, 2);
     vehicle.applyEngineForce(engineForce, 3);
@@ -138,10 +144,17 @@ export function createVehicle({ scene, world, palette }) {
     coastTime = throttleTarget === 0 ? Math.min(VEHICLE.idleBrakeRamp, coastTime + dt) : 0;
     const brakeForce = input.brake
       ? VEHICLE.brakeForce
-      : (throttleTarget === 0 ? (VEHICLE.idleBrake * coastTime) / VEHICLE.idleBrakeRamp : 0);
+      : counterBraking
+        ? VEHICLE.counterBrake
+        : (throttleTarget === 0 ? (VEHICLE.idleBrake * coastTime) / VEHICLE.idleBrakeRamp : 0);
     for (let i = 0; i < 4; i++) {
       vehicle.setBrake(brakeForce, i);
     }
+  }
+
+  function setVisible(on) {
+    carGroup.visible = on;
+    wheelMeshes.forEach((m) => { m.visible = on; });
   }
 
   function sync() {
@@ -221,6 +234,7 @@ export function createVehicle({ scene, world, palette }) {
     forwardSpeed: speedAlongForward,
     throttleValue: () => throttle,
     pitchDeg,
+    setVisible,
     tiltDeg,
   };
 }

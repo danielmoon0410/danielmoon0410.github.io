@@ -146,6 +146,8 @@ export async function buildApp({ canvas, touch, onStep }) {
   }
 
   let running = false;
+  let renderEnabled = true;
+  let renderCount = 0;
   let frameHandle = null;
   let lastTime = 0;
   let prevPadId = null;
@@ -186,7 +188,7 @@ export async function buildApp({ canvas, touch, onStep }) {
 
     sampleQuality(lastTime, rawDeltaMs);
 
-    composer.render();
+    if (renderEnabled) { composer.render(); renderCount += 1; }
 
     frameHandle = scheduleFrame(frame);
   }
@@ -251,12 +253,9 @@ export async function buildApp({ canvas, touch, onStep }) {
     cameraPosition: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z }),
     simTime: () => world.stepnumber / 60,
     snapCamera: () => snapCamera(),
-    carScreen: () => {   // car centre in canvas pixels, projected with the current camera
-      const p = vehicle.position();
-      camera.updateMatrixWorld();
-      const v = new THREE.Vector3(p.x, p.y, p.z).project(camera);
-      return { x: ((v.x + 1) / 2) * canvas.width, y: ((1 - v.y) / 2) * canvas.height };
-    },
+    setRender: (on) => { renderEnabled = Boolean(on); },    // test-only: frame() skips composer.render() while off
+    renderCount: () => renderCount,                         // frames rendered by the loop (renderOnce not counted)
+    setCarVisible: (on) => vehicle.setVisible(Boolean(on)),
   };
 
   return { start, pause, resume, carPosition, quality, internals };
