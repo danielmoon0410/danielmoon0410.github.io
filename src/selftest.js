@@ -2,7 +2,7 @@
 // itself (a failing check is reported in the result JSON, not as an error).
 import { STATIONS, SECTIONS, CAREER, CV, FACTS } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
-import { SPAWN } from './config.js';
+import { SPAWN, VEHICLE, CAMERA } from './config.js';
 import { nearestRoadPoint } from './world.js';
 
 function assert(cond, msg) {
@@ -29,6 +29,13 @@ async function frames(n) {
   for (let i = 0; i < n; i++) {
     await nextTick();
   }
+}
+
+async function waitMs(ms) {
+  const t = performance.now();
+  do {
+    await nextTick();
+  } while (performance.now() - t < ms);
 }
 
 function dispatchKey(type, code) {
@@ -67,8 +74,8 @@ export async function runSelfTest({ api, app, ui }) {
 
   async function check(name, fn) {
     try {
-      await fn();
-      checks.push({ name, pass: true, detail: '' });
+      const result = await fn();
+      checks.push({ name, pass: true, detail: typeof result === 'string' ? result : '' });
     } catch (err) {
       checks.push({ name, pass: false, detail: err && err.message ? err.message : String(err) });
     }
@@ -291,6 +298,196 @@ export async function runSelfTest({ api, app, ui }) {
       assert(Math.abs(moved.x) < 1, `x drifted too far: ${moved.x}`);
     });
 
+    const st = () => app.internals.driveState();
+
+    await check('drive:hold', async () => {
+      app.internals.placeCarAt(45, -46, 0, -1);
+      await waitMs(1000);
+      assert(st().input.forward === false, `input.forward should be false before the hold, was ${st().input.forward}`);
+
+      const t0 = performance.now();
+      dispatchKey('keydown', 'KeyW');
+
+      const probes = [];
+      let noiseOn = true;
+      let noiseTimer = null;
+
+      function up() {
+        if (!noiseOn) return;
+        dispatchKey('keyup', 'KeyW');
+        noiseTimer = setTimeout(down, 60);
+      }
+      function down() {
+        if (!noiseOn) return;
+        probes.push(st().input.forward);
+        dispatchKey('keydown', 'KeyW');
+        noiseTimer = setTimeout(up, 40);
+      }
+      noiseTimer = setTimeout(up, 100);
+
+      const samples = [];
+      let endPos;
+      let tUp = 0;
+      let heldAfterUp = false;
+      try {
+        while (performance.now() - t0 < 4000) {
+          await nextTick();
+          const s = st();
+          samples.push({ t: performance.now() - t0, v: s.speed, fwd: s.input.forward, pitch: s.pitch });
+        }
+        endPos = api.carPosition();
+      } finally {
+        noiseOn = false;
+        clearTimeout(noiseTimer);
+        dispatchKey('keyup', 'KeyW');
+        tUp = performance.now();
+        heldAfterUp = st().input.forward;
+      }
+
+      let now = performance.now();
+      while (st().input.forward && now - tUp < 400) {
+        await nextTick();
+        now = performance.now();
+      }
+      const releaseMs = now - tUp;
+
+      const v0 = st().speed;
+      await waitMs(500);
+      const v1 = st().speed;
+
+      assert(
+        probes.length >= 30 && probes.every((p) => p === true),
+        `A1: probes.length=${probes.length}, allTrue=${probes.every((p) => p === true)}`
+      );
+      assert(
+        samples.length >= 40 && samples.every((s) => s.fwd === true),
+        `A2: samples.length=${samples.length}, allFwd=${samples.every((s) => s.fwd === true)}`
+      );
+
+      let worstStep = 0;
+      for (let i = 1; i < samples.length; i++) {
+        const drop = samples[i - 1].v - samples[i].v;
+        if (drop > worstStep) worstStep = drop;
+        assert(
+          samples[i].v >= samples[i - 1].v - 0.1,
+          `A3: speed dropped ${drop.toFixed(2)} m/s at t=${samples[i].t.toFixed(0)}ms (${samples[i - 1].v.toFixed(2)} -> ${samples[i].v.toFixed(2)})`
+        );
+      }
+
+      const maxV = samples.reduce((m, s) => Math.max(m, s.v), -Infinity);
+      assert(maxV <= VEHICLE.maxSpeed + 0.2, `A4: max speed ${maxV.toFixed(2)} > ${(VEHICLE.maxSpeed + 0.2).toFixed(2)}`);
+
+      const lateSamples = samples.filter((s) => s.t >= 3500);
+      assert(lateSamples.length >= 3, `A5: only ${lateSamples.length} samples with t >= 3500`);
+      const winMin = Math.min(...lateSamples.map((s) => s.v));
+      assert(winMin >= 0.85 * VEHICLE.maxSpeed, `A5: late-window min speed ${winMin.toFixed(2)} < ${(0.85 * VEHICLE.maxSpeed).toFixed(2)}`);
+      const lastLate = lateSamples[lateSamples.length - 1].v;
+      assert(lastLate >= 0.9 * VEHICLE.maxSpeed, `A5: last sample speed ${lastLate.toFixed(2)} < ${(0.9 * VEHICLE.maxSpeed).toFixed(2)}`);
+
+      const dist = -46 - endPos.z;
+      assert(dist >= 30, `A6: distance ${dist.toFixed(2)} m < 30 m`);
+      assert(Math.abs(endPos.x - 45) <= 1.5, `A6: x drift ${(endPos.x - 45).toFixed(2)} exceeds 1.5`);
+
+      const maxPitch = samples.reduce((m, s) => Math.max(m, Math.abs(s.pitch)), 0);
+      assert(maxPitch <= 5, `A7: max |pitch| ${maxPitch.toFixed(2)} deg > 5`);
+
+      assert(heldAfterUp === true, `A8: heldAfterUp was ${heldAfterUp}`);
+
+      assert(
+        releaseMs >= VEHICLE.keyReleaseDebounceMs - 5 && releaseMs <= VEHICLE.keyReleaseDebounceMs + 300,
+        `A9: releaseMs ${releaseMs.toFixed(2)} outside [${VEHICLE.keyReleaseDebounceMs - 5}, ${VEHICLE.keyReleaseDebounceMs + 300}]`
+      );
+
+      const coastDrop = v0 - v1;
+      assert(coastDrop >= 0.3 && coastDrop <= 2.0, `A10: coastDrop ${coastDrop.toFixed(2)} outside [0.3, 2.0]`);
+
+      const vEnd = samples.length ? samples[samples.length - 1].v : 0;
+      return `vEnd=${vEnd.toFixed(2)} winMin=${winMin.toFixed(2)} worstStep=${worstStep.toFixed(2)} dist=${dist.toFixed(2)} maxPitch=${maxPitch.toFixed(2)} gaps=${probes.length} releaseMs=${releaseMs.toFixed(2)} coastDrop=${coastDrop.toFixed(2)}`;
+    });
+
+    await check('camera:height', async () => {
+      try {
+        await frames(2);
+        const h = app.internals.cameraPosition().y - api.carPosition().y;
+        assert(h >= CAMERA.minHeightAboveCar, `camera height above car ${h.toFixed(2)} < ${CAMERA.minHeightAboveCar}`);
+        return `h=${h.toFixed(2)}`;
+      } finally {
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
+    });
+
+    await check('input:blur', async () => {
+      dispatchKey('keydown', 'KeyD');
+      assert(st().input.right === true, 'right should be true right after keydown');
+
+      dispatchKey('keyup', 'KeyD');
+      assert(st().input.right === true, 'right should still be true immediately after keyup (debounced release)');
+
+      window.dispatchEvent(new Event('blur'));
+      assert(st().input.right === false, 'right should be false at once after blur');
+
+      dispatchKey('keydown', 'KeyD');
+      await waitMs(VEHICLE.keyReleaseDebounceMs + 50);
+      assert(st().input.right === true, 'right should still be true after the debounce window (a stale timer would have dropped it)');
+
+      dispatchKey('keyup', 'KeyD');
+      await waitMs(VEHICLE.keyReleaseDebounceMs + 50);
+      assert(st().input.right === false, 'right should be false after the debounce window following keyup');
+    });
+
+    if (document.body.classList.contains('touch')) {
+      await check('layout:touch', async () => {
+        try {
+          const p = app.internals.padPosition('about');
+          app.internals.placeCarAt(p.x, p.z, 0, -1);
+          await frames(3);
+
+          const ids = ['hint', 'prompt', 'tc-left', 'tc-right', 'tc-rev', 'tc-gas'];
+          const rects = {};
+          for (const id of ids) {
+            const el = document.getElementById(id);
+            assert(el, `#${id} not found`);
+            const r = el.getBoundingClientRect();
+            assert(r.width > 0 && r.height > 0, `#${id} has non-positive size ${r.width}x${r.height}`);
+            assert(
+              r.left >= -1 && r.top >= -1 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1,
+              `#${id} rect outside viewport: left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} right=${r.right.toFixed(1)} bottom=${r.bottom.toFixed(1)}`
+            );
+            rects[id] = r;
+          }
+
+          function overlaps(a, b) {
+            const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+            const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+            return ox > 1 && oy > 1;
+          }
+
+          assert(!overlaps(rects.hint, rects.prompt), 'hint overlaps prompt by more than 1px');
+          for (const tc of ['tc-left', 'tc-right', 'tc-rev', 'tc-gas']) {
+            assert(!overlaps(rects.hint, rects[tc]), `hint overlaps #${tc} by more than 1px`);
+            assert(!overlaps(rects.prompt, rects[tc]), `prompt overlaps #${tc} by more than 1px`);
+          }
+
+          assert(
+            document.documentElement.scrollWidth <= window.innerWidth,
+            `scrollWidth ${document.documentElement.scrollWidth} > innerWidth ${window.innerWidth}`
+          );
+
+          const hintP = document.querySelector('#hint p');
+          assert(hintP, '#hint p not found');
+          const hintRect = hintP.getBoundingClientRect();
+          const fontSize = parseFloat(window.getComputedStyle(hintP).fontSize);
+          assert(hintRect.height <= 2 * fontSize, `hint text wraps to more than one line: height=${hintRect.height.toFixed(1)} limit=${(2 * fontSize).toFixed(1)}`);
+
+          return `vw=${window.innerWidth} vh=${window.innerHeight}`;
+        } finally {
+          app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+          await frames(3);
+        }
+      });
+    }
+
     for (const station of STATIONS) {
       await check(`pad:${station.id}`, async () => {
         const pos = app.internals.padPosition(station.id);
@@ -407,7 +604,8 @@ export async function runSelfTest({ api, app, ui }) {
   const pass = checks.every((c) => c.pass);
   const pixelRatio = mode === '3d' && app ? app.internals.pixelRatio() : null;
   const quality = mode === '3d' && app ? app.quality() : null;
-  const result = { pass, mode, pixelRatio, quality, checks };
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  const result = { pass, mode, pixelRatio, quality, viewport, checks };
 
   const pre = document.createElement('pre');
   pre.id = 'selftest-result';

@@ -262,7 +262,7 @@ function buildRobots(scene, world, palette) {
     robots.push({ head, tip, k });
 
     const body = new CANNON.Body({ type: CANNON.Body.STATIC });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(0.8, 1.8, 0.5)));
+    body.addShape(new CANNON.Box(new CANNON.Vec3(0.5, 1.8, 0.8)));
     body.position.set(cfg.x, 1.8, z);
     world.addBody(body);
   });

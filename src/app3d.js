@@ -160,8 +160,8 @@ export async function buildApp({ canvas, touch, onStep }) {
 
   function frame(now) {
     if (!running) return;
-    const rawDeltaMs = now - lastTime;
-    lastTime = now;
+    const rawDeltaMs = Math.max(0, now - lastTime);
+    lastTime = Math.max(lastTime, now);
     const dt = Math.min(rawDeltaMs / 1000, 0.1);
 
     vehicle.update(input.state, dt);
@@ -179,12 +179,12 @@ export async function buildApp({ canvas, touch, onStep }) {
       }
       prevPadId = id;
     }
-    stations.update(now / 1000, dt, id);
+    stations.update(lastTime / 1000, dt, id);
 
     updateCameraSmooth(dt);
     updateSun();
 
-    sampleQuality(now, rawDeltaMs);
+    sampleQuality(lastTime, rawDeltaMs);
 
     composer.render();
 
@@ -247,6 +247,15 @@ export async function buildApp({ canvas, touch, onStep }) {
     pixelRatio: () => renderer.getPixelRatio(),
     towerSlabCount: () => stations.towerSlabCount(),
     renderOnce: () => composer.render(),
+    driveState: () => ({ speed: vehicle.forwardSpeed(), throttle: vehicle.throttleValue(), pitch: vehicle.pitchDeg(), input: { ...input.state } }),
+    cameraPosition: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z }),
+    snapCamera: () => snapCamera(),
+    carScreen: () => {   // car centre in canvas pixels, projected with the current camera
+      const p = vehicle.position();
+      camera.updateMatrixWorld();
+      const v = new THREE.Vector3(p.x, p.y, p.z).project(camera);
+      return { x: ((v.x + 1) / 2) * canvas.width, y: ((1 - v.y) / 2) * canvas.height };
+    },
   };
 
   return { start, pause, resume, carPosition, quality, internals };

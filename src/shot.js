@@ -69,8 +69,10 @@ export async function runShot({ app, canvas, stationId }) {
     // draw. Reading back after an await (even a microtask) risks the
     // compositor handing back a black frame.
     app.pause();
+    app.internals.snapCamera();
     app.internals.renderOnce();
     const url = canvas.toDataURL(SHOT.mime, SHOT.quality);
+    const car = app.internals.carScreen();
 
     if (!url.startsWith('data:image/jpeg;base64,')) return fail('no image');
 
@@ -79,6 +81,8 @@ export async function runShot({ app, canvas, stationId }) {
     pre.dataset.height = canvas.height;
     pre.dataset.quality = app.quality();
     pre.dataset.uiHidden = uiHidden ? 'true' : 'false';
+    pre.dataset.carX = String(Math.round(car.x));
+    pre.dataset.carY = String(Math.round(car.y));
     document.body.dataset.shotStatus = 'done';
     return { status: 'done', detail: '' };
   } catch (err) {

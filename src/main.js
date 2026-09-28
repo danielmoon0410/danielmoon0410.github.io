@@ -2,13 +2,13 @@
 // fallback and selftest.
 import { installErrorHandlers, logError } from './errors.js';
 import * as ui from './ui.js';
-import { VERSION } from './config.js';
+import { VERSION, SHOT } from './config.js';
 import { STATIONS } from './content.js';
 
 installErrorHandlers();
 
 const params = new URLSearchParams(window.location.search);
-const shotId = params.get('shot');
+const shotId = SHOT.hosts.includes(window.location.hostname) ? params.get('shot') : null;
 const shotMode = shotId !== null;
 if (shotMode) document.body.dataset.shot = shotId;
 function flagOn(name) {

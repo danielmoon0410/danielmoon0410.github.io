@@ -73,6 +73,25 @@ export function createVehicle({ scene, world, palette }) {
   let steer = 0;
   let flippedTime = 0;
   let lastForward = { x: 0, z: -1 };
+  let throttle = 0; // -1..1
+  let coastTime = VEHICLE.idleBrakeRamp;
+
+  function forwardAxis() {
+    return chassisBody.quaternion.vmult(new CANNON.Vec3(-1, 0, 0));
+  }
+
+  function speedAlongForward() {
+    return chassisBody.velocity.dot(forwardAxis());
+  }
+
+  function pitchDeg() {
+    const clamped = Math.max(-1, Math.min(1, forwardAxis().y));
+    return Math.asin(clamped) * (180 / Math.PI);
+  }
+
+  function taper(s, cap) {
+    return Math.max(0, 1 - Math.pow(Math.max(0, s) / cap, VEHICLE.speedTaperPower));
+  }
 
   function update(input, dt) {
     const target = (input.left ? VEHICLE.maxSteer : 0) + (input.right ? -VEHICLE.maxSteer : 0);
@@ -80,24 +99,29 @@ export function createVehicle({ scene, world, palette }) {
     vehicle.setSteeringValue(steer, 0);
     vehicle.setSteeringValue(steer, 1);
 
-    const worldNegX = chassisBody.quaternion.vmult(new CANNON.Vec3(-1, 0, 0));
-    const forwardSpeed = chassisBody.velocity.dot(worldNegX);
+    const throttleTarget = input.forward ? 1 : input.back ? -1 : 0;
+    const rampRate = (throttleTarget !== 0 && throttleTarget * throttle >= 0) ? VEHICLE.throttleRise : VEHICLE.throttleFall;
+    const maxDelta = rampRate * dt;
+    if (throttle < throttleTarget) {
+      throttle = Math.min(throttleTarget, throttle + maxDelta);
+    } else if (throttle > throttleTarget) {
+      throttle = Math.max(throttleTarget, throttle - maxDelta);
+    }
 
+    const v = speedAlongForward();
     let engineForce = 0;
-    if (input.forward && forwardSpeed < VEHICLE.maxSpeed) {
-      engineForce = -VEHICLE.engineForce;
-    } else if (input.back) {
-      engineForce = VEHICLE.engineForce * VEHICLE.reverseFactor;
+    if (throttle > 0) {
+      engineForce = -VEHICLE.engineForce * throttle * taper(v, VEHICLE.maxSpeed);
+    } else if (throttle < 0) {
+      engineForce = VEHICLE.engineForce * VEHICLE.reverseFactor * -throttle * taper(-v, VEHICLE.maxReverseSpeed);
     }
     vehicle.applyEngineForce(engineForce, 2);
     vehicle.applyEngineForce(engineForce, 3);
 
-    let brakeForce = 0;
-    if (input.brake) {
-      brakeForce = VEHICLE.brakeForce;
-    } else if (!input.forward && !input.back) {
-      brakeForce = VEHICLE.idleBrake;
-    }
+    coastTime = throttleTarget === 0 ? Math.min(VEHICLE.idleBrakeRamp, coastTime + dt) : 0;
+    const brakeForce = input.brake
+      ? VEHICLE.brakeForce
+      : (throttleTarget === 0 ? (VEHICLE.idleBrake * coastTime) / VEHICLE.idleBrakeRamp : 0);
     for (let i = 0; i < 4; i++) {
       vehicle.setBrake(brakeForce, i);
     }
@@ -122,6 +146,8 @@ export function createVehicle({ scene, world, palette }) {
     chassisBody.angularVelocity.setZero();
     steer = 0;
     flippedTime = 0;
+    throttle = 0;
+    coastTime = VEHICLE.idleBrakeRamp;
     chassisBody.wakeUp();
     sync();
   }
@@ -167,5 +193,16 @@ export function createVehicle({ scene, world, palette }) {
     return { x: chassisBody.position.x, y: chassisBody.position.y, z: chassisBody.position.z };
   }
 
-  return { update, sync, placeAt, resetToRoad, checkAutoReset, position, forward };
+  return {
+    update,
+    sync,
+    placeAt,
+    resetToRoad,
+    checkAutoReset,
+    position,
+    forward,
+    forwardSpeed: speedAlongForward,
+    throttleValue: () => throttle,
+    pitchDeg,
+  };
 }

@@ -105,3 +105,8 @@ h1[data-fact="V1"] { margin: 14px 0 14px; }
 
 /* ---- GitHub and Contact --------------------------------------------------- */
 .page-github .page-body, .page-contact .page-body { display: grid; grid-template-columns: 7fr 5fr; gap: 32px; align-items: start; }
+
+/* ---- Run 3 review fixes ---- */
+figure.shot-frame figcaption { padding: 8px 12px; }
+.page-workflow .pipeline li.stage span, .page-workflow .pipeline li.handoff { font-size: 12px; }
+.page-cover .eyebrow { text-transform: none; }

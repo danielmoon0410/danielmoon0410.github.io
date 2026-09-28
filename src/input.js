@@ -1,27 +1,43 @@
 // Driving input: keyboard (event.code, safe with the Korean IME) and touch.
 // Keyboard and touch states are OR-ed into one combined state object.
+import { VEHICLE } from './config.js';
 
 const ARROW_OR_SPACE = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
+const DRIVE_CODES = new Map([
+  ['KeyW', 'forward'],
+  ['ArrowUp', 'forward'],
+  ['KeyS', 'back'],
+  ['ArrowDown', 'back'],
+  ['KeyA', 'left'],
+  ['ArrowLeft', 'left'],
+  ['KeyD', 'right'],
+  ['ArrowRight', 'right'],
+  ['Space', 'brake'],
+]);
 
 export function createInput({ isActive, onReset }) {
-  const keyState = { forward: false, back: false, left: false, right: false, brake: false };
+  const held = new Set();
+  const pendingRelease = new Map();
   const touchState = { forward: false, back: false, left: false, right: false, brake: false };
   const combined = { forward: false, back: false, left: false, right: false, brake: false };
 
+  function keyboardOn(action) {
+    for (const code of held) {
+      if (DRIVE_CODES.get(code) === action) return true;
+    }
+    return false;
+  }
+
   function recompute() {
-    combined.forward = keyState.forward || touchState.forward;
-    combined.back = keyState.back || touchState.back;
-    combined.left = keyState.left || touchState.left;
-    combined.right = keyState.right || touchState.right;
-    combined.brake = keyState.brake || touchState.brake;
+    for (const a of ['forward', 'back', 'left', 'right', 'brake']) {
+      combined[a] = keyboardOn(a) || touchState[a];
+    }
   }
 
   function clear() {
-    keyState.forward = false;
-    keyState.back = false;
-    keyState.left = false;
-    keyState.right = false;
-    keyState.brake = false;
+    for (const id of pendingRelease.values()) clearTimeout(id);
+    pendingRelease.clear();
+    held.clear();
     touchState.forward = false;
     touchState.back = false;
     touchState.left = false;
@@ -30,52 +46,40 @@ export function createInput({ isActive, onReset }) {
     recompute();
   }
 
-  function setKey(code, value) {
-    switch (code) {
-      case 'KeyW':
-      case 'ArrowUp':
-        keyState.forward = value;
-        return true;
-      case 'KeyS':
-      case 'ArrowDown':
-        keyState.back = value;
-        return true;
-      case 'KeyA':
-      case 'ArrowLeft':
-        keyState.left = value;
-        return true;
-      case 'KeyD':
-      case 'ArrowRight':
-        keyState.right = value;
-        return true;
-      case 'Space':
-        keyState.brake = value;
-        return true;
-      default:
-        return false;
-    }
-  }
-
   window.addEventListener('keydown', (e) => {
     if (!isActive()) return;
     if (e.code === 'KeyR') {
       if (!e.repeat && onReset) onReset();
       return;
     }
-    const handled = setKey(e.code, true);
-    if (handled) {
-      if (ARROW_OR_SPACE.has(e.code)) e.preventDefault();
-      recompute();
+    if (!DRIVE_CODES.has(e.code)) return;
+    if (ARROW_OR_SPACE.has(e.code)) e.preventDefault();
+
+    const pending = pendingRelease.get(e.code);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      pendingRelease.delete(e.code);
     }
+    held.add(e.code);
+    recompute();
   });
 
   window.addEventListener('keyup', (e) => {
     if (!isActive()) return;
-    const handled = setKey(e.code, false);
-    if (handled) {
-      if (ARROW_OR_SPACE.has(e.code)) e.preventDefault();
+    if (!DRIVE_CODES.has(e.code)) return;
+    if (ARROW_OR_SPACE.has(e.code)) e.preventDefault();
+    if (!held.has(e.code)) return;
+
+    const code = e.code;
+    const existing = pendingRelease.get(code);
+    if (existing !== undefined) clearTimeout(existing);
+
+    const id = setTimeout(() => {
+      pendingRelease.delete(code);
+      held.delete(code);
       recompute();
-    }
+    }, VEHICLE.keyReleaseDebounceMs);
+    pendingRelease.set(code, id);
   });
 
   window.addEventListener('blur', clear);

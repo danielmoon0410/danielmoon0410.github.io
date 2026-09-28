@@ -509,4 +509,6 @@ try {
   scheduleFinish(qrBuilt);
 } catch (err) {
   logError(err, 'print');
+  document.body.dataset.printReady = 'false';
+  document.body.dataset.printError = 'build: ' + (err && err.message ? err.message : String(err));
 }

@@ -79,9 +79,15 @@ export const VEHICLE = {
     customSlidingRotationalSpeed: -30,
     useCustomSlidingRotationalSpeed: true,
   },
-  engineForce: 1000,
+  engineForce: 500,
   reverseFactor: 0.6,
   maxSpeed: 22,
+  maxReverseSpeed: 10,        // m/s; reverse force tapers to 0 here
+  speedTaperPower: 8,         // engine force x max(0, 1 - (v / cap) ** power); no on/off cut
+  throttleRise: 3,            // throttle units/s away from 0 (0 -> 1 in 0.33 s)
+  throttleFall: 4,            // throttle units/s toward or through 0 (1 -> 0 in 0.25 s)
+  idleBrakeRamp: 1,           // s for the idle brake to ramp 0 -> idleBrake after W/S input stops
+  keyReleaseDebounceMs: 100,  // a driving key's keyup counts only if no keydown for that code follows within this
   maxSteer: 0.5,
   steerRate: 8,
   brakeForce: 1000000,
@@ -95,8 +101,9 @@ export const CAMERA = {
   fovPortrait: 70,
   near: 0.1,
   far: 400,
-  distance: 9,
-  height: 4.5,
+  distance: 10.5,
+  height: 7,
+  minHeightAboveCar: 6.5,
   lookAhead: 3,
   lookHeight: 1,
   posLambda: 4,
@@ -140,4 +147,5 @@ export const SHOT = {
   defaultFacing: [0, -1],                           // [dirX, dirZ] for placeCarAt; aims the follow camera at the scenery
   facing: { moe: [-1, 0], echonomics: [1, 0], workflow: [1, 0], 'gh-portfolio': [1, 0], 'gh-influence': [1, 0],
             'gh-ces2026': [1, 0], 'gh-echonomics': [1, 0], career: [-1, 0] },
+  hosts: ['localhost', '127.0.0.1', '[::1]'],   // ?shot= is honoured only on these hostnames
 };
