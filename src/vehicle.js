@@ -7,6 +7,7 @@ import { neonMaterial, nearestRoadPoint } from './world.js';
 export function createVehicle({ scene, world, palette }) {
   const chassisShape = new CANNON.Box(new CANNON.Vec3(VEHICLE.halfExtents[0], VEHICLE.halfExtents[1], VEHICLE.halfExtents[2]));
   const chassisBody = new CANNON.Body({ mass: VEHICLE.mass });
+  chassisBody.angularFactor.set(0, 1, 0);   // yaw only: the body never pitches or rolls
   chassisBody.addShape(chassisShape);
   chassisBody.allowSleep = false;
   chassisBody.position.set(0, VEHICLE.spawnY, 0);
@@ -35,6 +36,14 @@ export function createVehicle({ scene, world, palette }) {
     vehicle.addWheel({ ...wheelBase, chassisConnectionPointLocal: new CANNON.Vec3(x, y, z) });
   });
   vehicle.addToWorld(world);
+
+  // RaycastVehicle applies its wheel impulses with applyImpulse, which ignores angularFactor. The pitch/roll
+  // rates it adds never turn the body, but they would skew the next step's suspension and friction maths,
+  // so clear them after every physics step.
+  world.addEventListener('postStep', () => {
+    chassisBody.angularVelocity.x = 0;
+    chassisBody.angularVelocity.z = 0;
+  });
 
   // --- Mesh -----------------------------------------------------------
   const carGroup = new THREE.Group();
@@ -87,6 +96,14 @@ export function createVehicle({ scene, world, palette }) {
   function pitchDeg() {
     const clamped = Math.max(-1, Math.min(1, forwardAxis().y));
     return Math.asin(clamped) * (180 / Math.PI);
+  }
+
+  function tiltDeg() {
+    const fwd = new THREE.Vector3(-1, 0, 0).applyQuaternion(carGroup.quaternion);
+    const side = new THREE.Vector3(0, 0, 1).applyQuaternion(carGroup.quaternion);
+    const pitch = Math.asin(Math.max(-1, Math.min(1, fwd.y))) * (180 / Math.PI);
+    const roll = Math.asin(Math.max(-1, Math.min(1, side.y))) * (180 / Math.PI);
+    return { pitch, roll };
   }
 
   function taper(s, cap) {
@@ -204,5 +221,6 @@ export function createVehicle({ scene, world, palette }) {
     forwardSpeed: speedAlongForward,
     throttleValue: () => throttle,
     pitchDeg,
+    tiltDeg,
   };
 }

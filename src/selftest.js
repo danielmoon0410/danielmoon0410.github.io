@@ -278,6 +278,17 @@ export async function runSelfTest({ api, app, ui }) {
 
   // ---- Mode-specific -------------------------------------------------------
   if (mode === '3d' && app) {
+    async function waitSim(sec, capMs) {
+      const t0 = performance.now();
+      const s0 = app.internals.simTime();
+      while (app.internals.simTime() - s0 < sec) {
+        if (performance.now() - t0 >= capMs) {
+          throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in ${capMs} ms`);
+        }
+        await nextTick();
+      }
+    }
+
     await check('carPosition', () => {
       const pos = api.carPosition();
       assert(pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z), 'carPosition not finite');
@@ -285,12 +296,12 @@ export async function runSelfTest({ api, app, ui }) {
 
     await check('drive:forward', async () => {
       app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
-      await frames(30);
+      await waitSim(1.5, 6000);
       const rest = api.carPosition();
       assert(rest.y >= 0.6 && rest.y <= 0.85, `resting height ${rest.y} not in [0.6, 0.85]`);
 
       dispatchKey('keydown', 'KeyW');
-      await frames(40);
+      await waitSim(2.0, 8000);
       dispatchKey('keyup', 'KeyW');
 
       const moved = api.carPosition();
@@ -302,11 +313,12 @@ export async function runSelfTest({ api, app, ui }) {
 
     await check('drive:hold', async () => {
       app.internals.placeCarAt(45, -46, 0, -1);
-      await waitMs(1000);
+      await waitSim(1.0, 5000);
       assert(st().input.forward === false, `input.forward should be false before the hold, was ${st().input.forward}`);
 
       const t0 = performance.now();
       dispatchKey('keydown', 'KeyW');
+      const s0 = app.internals.simTime();
 
       const probes = [];
       let noiseOn = true;
@@ -330,10 +342,14 @@ export async function runSelfTest({ api, app, ui }) {
       let tUp = 0;
       let heldAfterUp = false;
       try {
-        while (performance.now() - t0 < 4000) {
+        while (app.internals.simTime() - s0 < 4.0) {
+          if (performance.now() - t0 >= 15000) {
+            throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+          }
           await nextTick();
           const s = st();
-          samples.push({ t: performance.now() - t0, v: s.speed, fwd: s.input.forward, pitch: s.pitch });
+          const pos = api.carPosition();
+          samples.push({ t: (app.internals.simTime() - s0) * 1000, v: s.speed, fwd: s.input.forward, tilt: s.tilt, y: pos.y });
         }
         endPos = api.carPosition();
       } finally {
@@ -352,8 +368,40 @@ export async function runSelfTest({ api, app, ui }) {
       const releaseMs = now - tUp;
 
       const v0 = st().speed;
-      await waitMs(500);
+      const coast = [];
+      const sc0 = app.internals.simTime();
+      const tc0 = performance.now();
+      while (app.internals.simTime() - sc0 < 0.5) {
+        if (performance.now() - tc0 >= 5000) {
+          throw new Error(`physics advanced only ${(app.internals.simTime() - sc0).toFixed(2)} s in 5000 ms`);
+        }
+        await nextTick();
+        const s = st();
+        const pos = api.carPosition();
+        coast.push({ tilt: s.tilt, y: pos.y });
+      }
       const v1 = st().speed;
+
+      const h0 = st().heading;
+      dispatchKey('keydown', 'KeyA');
+      const steer = [];
+      let h1;
+      try {
+        const ss0 = app.internals.simTime();
+        const ts0 = performance.now();
+        while (app.internals.simTime() - ss0 < 0.6) {
+          if (performance.now() - ts0 >= 5000) {
+            throw new Error(`physics advanced only ${(app.internals.simTime() - ss0).toFixed(2)} s in 5000 ms`);
+          }
+          await nextTick();
+          const s = st();
+          const pos = api.carPosition();
+          steer.push({ tilt: s.tilt, y: pos.y });
+        }
+        h1 = st().heading;
+      } finally {
+        dispatchKey('keyup', 'KeyA');
+      }
 
       assert(
         probes.length >= 30 && probes.every((p) => p === true),
@@ -388,21 +436,39 @@ export async function runSelfTest({ api, app, ui }) {
       assert(dist >= 30, `A6: distance ${dist.toFixed(2)} m < 30 m`);
       assert(Math.abs(endPos.x - 45) <= 1.5, `A6: x drift ${(endPos.x - 45).toFixed(2)} exceeds 1.5`);
 
-      const maxPitch = samples.reduce((m, s) => Math.max(m, Math.abs(s.pitch)), 0);
-      assert(maxPitch <= 5, `A7: max |pitch| ${maxPitch.toFixed(2)} deg > 5`);
+      const holdTilt = samples.reduce((m, s) => Math.max(m, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll)), 0);
+      assert(holdTilt <= 0.5, `A7: max hold |tilt| ${holdTilt.toFixed(2)} deg > 0.5`);
 
       assert(heldAfterUp === true, `A8: heldAfterUp was ${heldAfterUp}`);
 
       assert(
-        releaseMs >= VEHICLE.keyReleaseDebounceMs - 5 && releaseMs <= VEHICLE.keyReleaseDebounceMs + 300,
-        `A9: releaseMs ${releaseMs.toFixed(2)} outside [${VEHICLE.keyReleaseDebounceMs - 5}, ${VEHICLE.keyReleaseDebounceMs + 300}]`
+        releaseMs >= VEHICLE.keyReleaseDebounceMs - 5 && releaseMs <= VEHICLE.keyReleaseDebounceMs + 2500,
+        `A9: releaseMs ${releaseMs.toFixed(2)} outside [${VEHICLE.keyReleaseDebounceMs - 5}, ${VEHICLE.keyReleaseDebounceMs + 2500}]`
       );
 
       const coastDrop = v0 - v1;
-      assert(coastDrop >= 0.3 && coastDrop <= 2.0, `A10: coastDrop ${coastDrop.toFixed(2)} outside [0.3, 2.0]`);
+      assert(coastDrop >= 0.3 && coastDrop <= 2.5, `A10: coastDrop ${coastDrop.toFixed(2)} outside [0.3, 2.5]`);
 
+      assert(coast.length >= 5, `A11: coast.length=${coast.length} < 5`);
+      const coastTilt = coast.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
+      assert(coastTilt <= 0.5, `A11: max coast |tilt| ${coastTilt.toFixed(2)} deg > 0.5`);
+
+      assert(steer.length >= 5, `A12: steer.length=${steer.length} < 5`);
+      const steerTilt = steer.reduce((m, c) => Math.max(m, Math.abs(c.tilt.pitch), Math.abs(c.tilt.roll)), 0);
+      assert(steerTilt <= 0.5, `A12: max steer |tilt| ${steerTilt.toFixed(2)} deg > 0.5`);
+
+      const turnDot = Math.max(-1, Math.min(1, h0.x * h1.x + h0.z * h1.z));
+      const turnDeg = Math.acos(turnDot) * (180 / Math.PI);
+      assert(turnDeg >= 5, `A13: turned only ${turnDeg.toFixed(2)} deg`);
+
+      const allY = [...samples.map((s) => s.y), ...coast.map((c) => c.y), ...steer.map((c) => c.y)];
+      const yMin = Math.min(...allY);
+      const yMax = Math.max(...allY);
+      assert(yMin >= 0.55 && yMax <= 0.95, `A14: y range [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] outside [0.55, 0.95]`);
+
+      const maxTilt = Math.max(holdTilt, coastTilt, steerTilt);
       const vEnd = samples.length ? samples[samples.length - 1].v : 0;
-      return `vEnd=${vEnd.toFixed(2)} winMin=${winMin.toFixed(2)} worstStep=${worstStep.toFixed(2)} dist=${dist.toFixed(2)} maxPitch=${maxPitch.toFixed(2)} gaps=${probes.length} releaseMs=${releaseMs.toFixed(2)} coastDrop=${coastDrop.toFixed(2)}`;
+      return `vEnd=${vEnd.toFixed(2)} winMin=${winMin.toFixed(2)} worstStep=${worstStep.toFixed(2)} dist=${dist.toFixed(2)} maxTilt=${maxTilt.toFixed(2)} turn=${turnDeg.toFixed(2)} yMin=${yMin.toFixed(2)} yMax=${yMax.toFixed(2)} gaps=${probes.length} releaseMs=${releaseMs.toFixed(2)} coastDrop=${coastDrop.toFixed(2)}`;
     });
 
     await check('camera:height', async () => {

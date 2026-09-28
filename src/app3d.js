@@ -247,8 +247,9 @@ export async function buildApp({ canvas, touch, onStep }) {
     pixelRatio: () => renderer.getPixelRatio(),
     towerSlabCount: () => stations.towerSlabCount(),
     renderOnce: () => composer.render(),
-    driveState: () => ({ speed: vehicle.forwardSpeed(), throttle: vehicle.throttleValue(), pitch: vehicle.pitchDeg(), input: { ...input.state } }),
+    driveState: () => ({ speed: vehicle.forwardSpeed(), throttle: vehicle.throttleValue(), pitch: vehicle.pitchDeg(), tilt: vehicle.tiltDeg(), heading: vehicle.forward(), input: { ...input.state } }),
     cameraPosition: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z }),
+    simTime: () => world.stepnumber / 60,
     snapCamera: () => snapCamera(),
     carScreen: () => {   // car centre in canvas pixels, projected with the current camera
       const p = vehicle.position();
