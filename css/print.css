@@ -1,0 +1,107 @@
+/* Print page layout. Loaded after style.css. Colors: var(--c-...) or
+   transparent only -- no hex/rgb/hsl, no filter/shadow/fixed/italics. */
+
+@page { size: 1280px 720px; margin: 0; }
+html, body { width: auto; height: auto; min-height: 0; overflow: visible; margin: 0; background: var(--c-bg);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.page { position: relative; box-sizing: border-box; width: 1280px; height: 720px; overflow: hidden; display: flex;
+  flex-direction: column; padding: 44px 56px 28px; background: var(--c-bg); color: var(--c-text);
+  break-after: page; page-break-after: always; break-inside: avoid; }
+.page:last-child { break-after: auto; page-break-after: auto; }
+.page-foot { margin-top: auto; }
+@media print { body:not([data-print-ready="true"]) #pages { visibility: hidden; } }
+@media screen { .page { margin: 0 auto 24px; } }
+svg.qr { display: block; width: 232px; height: 232px; } .qr-bg { fill: var(--c-text); } .qr-dark { fill: var(--c-bg); }
+figure.shot-frame { margin: 0; overflow: hidden; border: 2px solid var(--accent, var(--c-trace)); border-radius: 12px; }
+img.shot { display: block; width: 100%; height: auto; }
+
+/* ---- Accents ------------------------------------------------------------ */
+.page-cover, .page-play, .page-contact { --accent: var(--c-trace); }
+.page-project-01 { --accent: var(--c-cyan); }
+.page-project-02 { --accent: var(--c-amber); }
+.page-project-03 { --accent: var(--c-magenta); }
+.page-workflow, .page-career { --accent: var(--c-violet); }
+.page-github { --accent: var(--c-cyan); }
+
+[data-station="about"], [data-station="contact"] { --accent: var(--c-trace); }
+[data-station="moe"] { --accent: var(--c-cyan); }
+[data-station="echonomics"] { --accent: var(--c-amber); }
+[data-station="portfolio-agent"] { --accent: var(--c-magenta); }
+[data-station="workflow"] { --accent: var(--c-violet); }
+[data-station="career"] { --accent: var(--c-violet); }
+[data-station="gh-influence"] { --accent: var(--c-magenta); }
+
+/* ---- Structure ------------------------------------------------------------ */
+.page-head { margin: 0 0 18px; padding-bottom: 10px; border-bottom: 2px solid var(--c-chip); flex: 0 0 auto; }
+.page-head h2 { font-size: 32px; margin: 0 0 4px; color: var(--accent, var(--c-text)); }
+.page-body h3 { font-size: 22px; margin: 0 0 8px; color: var(--c-text); }
+.page-body { flex: 1 1 auto; font-size: 15px; line-height: 1.5; }
+.page-workflow .page-body, .page-career .page-body, .page-github .page-body { font-size: 13px; }
+
+.page-foot { display: flex; justify-content: space-between; gap: 16px; padding-top: 8px;
+  border-top: 1px solid var(--c-chip); font-size: 12px; color: var(--c-muted); flex: 0 0 auto; }
+.page-foot .copy-line { margin: 0; }
+.page-foot .url { margin: 0; }
+
+.col-text, .col-media { min-width: 0; }
+
+.copy-line { margin: 0 0 10px; }
+
+.eyebrow { color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 13px; margin: 0 0 8px; }
+.id-line { font-size: 15px; color: var(--c-muted); margin: 0 0 6px; }
+.lead { font-size: 26px; line-height: 1.4; margin: 0 0 14px; }
+.tagline { font-size: 18px; color: var(--accent, var(--c-violet)); margin: 2px 0 16px; }
+.callout { background: var(--c-chip); border-left: 4px solid var(--accent, var(--c-trace)); padding: 12px 16px;
+  border-radius: 10px; margin: 12px 0; }
+.aside { color: var(--c-muted); font-size: 13px; margin: 14px 0 0; }
+.url { font-size: 14px; color: var(--c-trace); margin: 6px 0 0; word-break: break-all; }
+.qr-caption { font-size: 13px; color: var(--c-muted); text-align: center; margin: 10px 0 0; }
+.credit { font-size: 12px; color: var(--c-muted); margin: 12px 0 0; }
+.signoff { grid-column: 1 / -1; text-align: center; font-size: 14px; color: var(--c-muted); margin: 18px 0 0;
+  padding-top: 14px; border-top: 1px solid var(--c-chip); }
+
+.card { background: var(--c-chip); border: 2px solid var(--accent, var(--c-trace)); border-radius: 14px; padding: 16px 20px; }
+
+.qr-link { display: block; width: 232px; }
+.btn.start { display: inline-block; }
+
+/* ---- Cover --------------------------------------------------------------- */
+.page-cover .page-body { display: grid; grid-template-columns: 1fr 300px; gap: 36px; align-items: center; }
+.v1-name { display: block; font-size: 76px; font-weight: 700; line-height: 1.1; }
+.v1-tag { display: block; font-size: 30px; font-weight: 400; color: var(--c-muted); margin-top: 4px; }
+h1[data-fact="V1"] { margin: 14px 0 14px; }
+.page-cover .col-media { text-align: center; }
+
+/* ---- Play ------------------------------------------------------------ */
+.page-play .page-body { display: grid; grid-template-columns: 5fr 7fr; gap: 32px; align-items: center; }
+
+/* ---- Project pages -------------------------------------------------------- */
+.page-project-01 .page-body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.page-project-01 .card { max-width: 900px; width: 100%; }
+.page-project-01 h3 { font-size: 30px; }
+.page-project-01 .card p[data-fact="M3"] { font-size: 20px; }
+.page-project-01 .card p[data-fact="M4"] { font-size: 16px; color: var(--c-muted); }
+
+.page-project-02 .page-body, .page-project-03 .page-body { display: grid; grid-template-columns: 7fr 5fr; gap: 32px; align-items: start; }
+.page-project-03 .card { padding: 12px 16px; }
+.page-project-03 .eyebrow { margin: 0 0 6px; }
+.page-project-03 .copy-line { margin: 0 0 7px; }
+
+/* ---- Workflow -------------------------------------------------------- */
+.page-workflow .page-body { display: flex; flex-direction: column; gap: 8px; }
+.page-workflow .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0; }
+.page-workflow .card { padding: 10px 14px; }
+.page-workflow .card .copy-line { margin: 0; }
+.page-workflow .callout { padding: 8px 16px; margin: 0; }
+.page-workflow .credit { margin: 8px 0 0; }
+
+/* ---- Career ------------------------------------------------------------ */
+.page-career .page-body { display: grid; grid-template-columns: 8fr 4fr; gap: 32px; align-items: start; }
+.page-career .page-head { margin-bottom: 12px; }
+.page-career .timeline { display: flex; flex-direction: column-reverse; margin: 0 0 6px; }
+.page-career .timeline li { padding: 0 0 0 18px; }
+.page-career .timeline .copy-line { margin: 0 0 3px; }
+.page-career .callout { padding: 8px 14px; margin: 4px 0 0; }
+
+/* ---- GitHub and Contact --------------------------------------------------- */
+.page-github .page-body, .page-contact .page-body { display: grid; grid-template-columns: 7fr 5fr; gap: 32px; align-items: start; }

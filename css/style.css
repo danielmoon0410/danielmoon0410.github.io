@@ -1,0 +1,532 @@
+:root {
+  --c-bg: #05070d;
+  --c-floor: #0a1411;
+  --c-grid: #123a30;
+  --c-road: #0d2622;
+  --c-trace: #1cffc4;
+  --c-cyan: #2de2ff;
+  --c-magenta: #ff3dd2;
+  --c-amber: #ffb02e;
+  --c-violet: #9b7bff;
+  --c-chip: #171c26;
+  --c-pin: #a9b3c1;
+  --c-text: #eaf6f3;
+  --c-muted: #8ea8a3;
+  --c-panel: rgba(8, 13, 20, 0.9);
+  --c-scrim: rgba(5, 7, 13, 0.96);
+  --font-ui: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: var(--font-ui);
+}
+
+body.page-workflow {
+  overflow: auto;
+  height: auto;
+  min-height: 100%;
+}
+
+body {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--c-trace);
+}
+
+/* ---- Canvas ------------------------------------------------------------ */
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  z-index: 0;
+  display: block;
+}
+
+/* ---- Skip button --------------------------------------------------------- */
+#skip-2d {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 60;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--c-trace);
+  background: var(--c-panel);
+  color: var(--c-text);
+  cursor: pointer;
+}
+
+body[data-view="2d"] #skip-2d,
+body[data-view="2d"] #hint,
+body[data-view="2d"] #prompt,
+body[data-view="2d"] #touch-controls {
+  display: none;
+}
+
+/* ---- Loader -------------------------------------------------------------- */
+#loader {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 16px;
+  text-align: center;
+  background: var(--c-scrim);
+}
+
+#loader .loader-name {
+  font-size: 1.4rem;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+#loader-bar {
+  width: min(320px, 70vw);
+  height: 10px;
+  accent-color: var(--c-trace);
+}
+
+#loader-pct {
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#start-btn {
+  margin-top: 8px;
+  padding: 12px 32px;
+  border-radius: 999px;
+  border: 1px solid var(--c-trace);
+  background: var(--c-chip);
+  color: var(--c-text);
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+#start-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- Hint ---------------------------------------------------------------- */
+#hint {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 10;
+  background: var(--c-panel);
+  color: var(--c-muted);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+#hint p {
+  margin: 0;
+}
+
+body.touch #hint {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 84px);
+  white-space: normal;
+  max-width: calc(100vw - 32px);
+}
+
+/* ---- Prompt -------------------------------------------------------------- */
+#prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--c-panel);
+  color: var(--c-text);
+  border: 1px solid var(--c-trace);
+  border-radius: 999px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+#prompt kbd {
+  background: var(--c-chip);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+body.touch #prompt {
+  bottom: 180px;
+}
+
+body.touch #prompt kbd {
+  display: none;
+}
+
+/* ---- Touch controls -------------------------------------------------------- */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+#touch-controls button {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  border-radius: 50%;
+  border: 1px solid var(--c-trace);
+  background: var(--c-panel);
+  color: var(--c-text);
+  font-size: 1.4rem;
+  pointer-events: auto;
+  user-select: none;
+  touch-action: none;
+}
+
+#tc-left {
+  left: 16px;
+}
+
+#tc-right {
+  left: 96px;
+}
+
+#tc-gas {
+  right: 16px;
+}
+
+#tc-rev {
+  right: 96px;
+}
+
+#touch-controls button.pressed {
+  background: var(--c-trace);
+  color: var(--c-bg);
+}
+
+/* ---- Panel --------------------------------------------------------------- */
+#panel {
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  bottom: 16px;
+  width: min(460px, calc(100vw - 32px));
+  overflow-y: auto;
+  z-index: 58;
+  background: var(--c-panel);
+  border: 2px solid var(--accent, var(--c-trace));
+  border-radius: 14px;
+  padding: 22px;
+}
+
+#panel[data-station="about"] {
+  --accent: var(--c-trace);
+}
+#panel[data-station="moe"] {
+  --accent: var(--c-cyan);
+}
+#panel[data-station="echonomics"] {
+  --accent: var(--c-amber);
+}
+#panel[data-station="portfolio-agent"] {
+  --accent: var(--c-magenta);
+}
+#panel[data-station="workflow"] {
+  --accent: var(--c-violet);
+}
+#panel[data-station="gh-portfolio"] {
+  --accent: var(--c-cyan);
+}
+#panel[data-station="gh-influence"] {
+  --accent: var(--c-magenta);
+}
+#panel[data-station="gh-ces2026"] {
+  --accent: var(--c-amber);
+}
+#panel[data-station="gh-echonomics"] {
+  --accent: var(--c-violet);
+}
+#panel[data-station="career"] {
+  --accent: var(--c-violet);
+}
+#panel[data-station="contact"] {
+  --accent: var(--c-trace);
+}
+
+#panel strong {
+  color: var(--accent, var(--c-trace));
+}
+
+#panel .eyebrow {
+  color: var(--c-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  margin: 0 0 4px;
+}
+
+#panel-title {
+  margin: 0 0 12px;
+}
+
+#panel-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--c-muted);
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+  line-height: 1;
+}
+
+@media (max-width: 700px) {
+  #panel {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    top: auto;
+    width: auto;
+    max-height: 70vh;
+  }
+}
+
+/* ---- Copy ------------------------------------------------------------ */
+.copy-line {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+  margin: 0 0 14px;
+}
+
+.copy-line.highlight {
+  margin-left: 24px;
+  color: var(--c-muted);
+}
+
+details summary {
+  cursor: pointer;
+  margin: 8px 0;
+}
+
+.btn,
+.btn.cv {
+  display: inline-block;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, var(--c-trace));
+  background: var(--c-chip);
+  color: var(--c-text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--c-text);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  border-left: 2px solid var(--c-violet);
+}
+
+.timeline li {
+  padding: 4px 0 4px 18px;
+}
+
+/* ---- 2D view --------------------------------------------------------- */
+#view-2d {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  overflow-y: auto;
+  background: var(--c-scrim);
+  color: var(--c-text);
+}
+
+#view-2d > * {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+#view-2d > header {
+  padding-top: 24px;
+}
+
+section.v2d-section {
+  border-top: 3px solid var(--c-trace);
+  margin-top: 40px;
+  padding-top: 16px;
+}
+
+section.v2d-section:first-of-type {
+  margin-top: 24px;
+}
+
+section.v2d-section article {
+  margin-bottom: 28px;
+}
+
+section.v2d-section .eyebrow {
+  color: var(--c-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  margin: 0 0 4px;
+}
+
+/* ---- Workflow page ----------------------------------------------------- */
+main#workflow {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px 16px 48px;
+}
+
+body.page-workflow header {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 0;
+}
+
+a.home {
+  color: var(--c-text);
+  text-decoration: none;
+  font-weight: bold;
+}
+
+/* ---- Pipeline diagram ---------------------------------------------------- */
+.pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  list-style: none;
+  margin: 24px 0;
+  padding: 0;
+}
+
+.pipeline li {
+  display: flex;
+  align-items: baseline;
+  position: relative;
+}
+
+.pipeline li:not(:last-child)::after {
+  content: "\2192";
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 4px;
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+.pipeline li.stage {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 16px;
+  border: 2px solid var(--accent, var(--c-violet));
+  border-radius: 10px;
+  background: var(--c-chip);
+}
+
+.pipeline li:nth-child(1) {
+  --accent: var(--c-cyan);
+}
+.pipeline li:nth-child(3) {
+  --accent: var(--c-magenta);
+}
+.pipeline li:nth-child(5) {
+  --accent: var(--c-amber);
+}
+.pipeline li:nth-child(7) {
+  --accent: var(--c-violet);
+}
+
+.pipeline li.stage strong {
+  color: var(--accent, var(--c-violet));
+}
+
+.pipeline li.stage span {
+  color: var(--c-muted);
+  font-size: 0.85em;
+}
+
+.pipeline li.handoff {
+  color: var(--c-muted);
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.pipeline li.stage.gate {
+  border-color: var(--c-trace);
+}
+
+.pipeline li.stage.gate strong,
+.pipeline li.stage.gate {
+  color: var(--c-trace);
+}
+
+@media (max-width: 700px) {
+  .pipeline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pipeline li:not(:last-child)::after {
+    content: "\2193";
+    left: 50%;
+    top: 100%;
+    transform: translateX(-50%);
+    margin-left: 0;
+    margin-top: 4px;
+  }
+}
+
+/* ---- Shot mode (?shot=<station-id>): canvas only ---- */
+body[data-shot] #skip-2d, body[data-shot] #loader, body[data-shot] #hint, body[data-shot] #prompt,
+body[data-shot] #touch-controls, body[data-shot] #panel, body[data-shot] #view-2d { display: none !important; }
