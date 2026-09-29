@@ -1,8 +1,119 @@
 // RaycastVehicle physics, car mesh, forces and resets.
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { VEHICLE } from './config.js';
-import { neonMaterial, nearestRoadPoint } from './world.js';
+import { statusLightMaterial, nearestRoadPoint } from './world.js';
+import { buildSlot } from './assets.js';
+
+// Local (forward is -x); the parts fit x +/-2.1, y -0.35..1.0, z +/-1.0.
+// Returns root, with root.userData.body (a Group) and root.userData.wheels
+// (4 Groups); root stays at the origin and is never moved.
+function buildCarModel(palette) {
+  const root = new THREE.Group();
+
+  const paint = new THREE.MeshPhysicalMaterial({ color: palette.w.orange, roughness: 0.35, metalness: 0.15, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: palette.w['car-glass'], metalness: 0.3, roughness: 0.08, envMapIntensity: 1.3 });
+  const inkMat = new THREE.MeshStandardMaterial({ color: palette.w.ink });
+  const tyreMat = new THREE.MeshStandardMaterial({ color: palette.w.tyre, roughness: 0.9 });
+  const rimMat = new THREE.MeshStandardMaterial({ color: palette.w.rim, metalness: 0.85, roughness: 0.3 });
+
+  const body = new THREE.Group();
+
+  const lower = new THREE.Mesh(new RoundedBoxGeometry(4.1, 0.62, 1.96, 3, 0.16), paint);
+  lower.castShadow = true;
+  body.add(lower);
+
+  const cabin = new THREE.Mesh(new RoundedBoxGeometry(2.0, 0.56, 1.62, 3, 0.14), glassMat);
+  cabin.position.set(0.25, 0.56, 0);
+  cabin.castShadow = true;
+  body.add(cabin);
+
+  const roof = new THREE.Mesh(new RoundedBoxGeometry(1.7, 0.08, 1.66, 2, 0.04), paint);
+  roof.position.set(0.35, 0.86, 0);
+  roof.castShadow = true;
+  body.add(roof);
+
+  [-0.72, 1.2].forEach((px) => {
+    [-0.78, 0.78].forEach((pz) => {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.08), paint);
+      pillar.position.set(px, 0.58, pz);
+      pillar.castShadow = true;
+      body.add(pillar);
+    });
+  });
+
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.06, 1.98), inkMat);
+  belt.position.set(0, 0.12, 0);
+  belt.castShadow = true;
+  body.add(belt);
+
+  [-2.08, 2.08].forEach((px) => {
+    const bumper = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.24, 1.9), tyreMat);
+    bumper.position.set(px, -0.14, 0);
+    bumper.castShadow = true;
+    body.add(bumper);
+  });
+
+  [-1.02, 1.02].forEach((pz) => {
+    const mirror = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.1, 0.18), paint);
+    mirror.position.set(-0.62, 0.42, pz);
+    mirror.castShadow = true;
+    body.add(mirror);
+  });
+
+  const headlightMat = statusLightMaterial(palette.w.lamp, 2);
+  [-0.62, 0.62].forEach((pz) => {
+    const headlight = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.12, 0.36), headlightMat);
+    headlight.position.set(-2.07, 0.1, pz);
+    headlight.castShadow = true;
+    body.add(headlight);
+  });
+
+  const taillightMat = statusLightMaterial(palette.w['orange-deep'], 2);
+  [-0.6, 0.6].forEach((pz) => {
+    const taillight = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.1, 0.4), taillightMat);
+    taillight.position.set(2.07, 0.12, pz);
+    taillight.castShadow = true;
+    body.add(taillight);
+  });
+
+  root.add(body);
+
+  const wheels = VEHICLE.wheelPositions.map(() => {
+    const wheel = new THREE.Group();
+
+    const tyreGeom = new THREE.CylinderGeometry(0.5, 0.5, 0.34, 28);
+    tyreGeom.rotateX(Math.PI / 2);
+    const tyreMesh = new THREE.Mesh(tyreGeom, tyreMat);
+    tyreMesh.castShadow = true;
+    wheel.add(tyreMesh);
+
+    const rimGeom = new THREE.CylinderGeometry(0.33, 0.33, 0.36, 20);
+    rimGeom.rotateX(Math.PI / 2);
+    const rimGeoms = [rimGeom];
+    for (let side = 0; side < 2; side++) {
+      const sz = side === 0 ? -0.185 : 0.185;
+      for (let k = 0; k < 5; k++) {
+        const spoke = new THREE.BoxGeometry(0.07, 0.56, 0.03);
+        spoke.rotateZ(k * ((2 * Math.PI) / 5));
+        spoke.translate(0, 0, sz);
+        rimGeoms.push(spoke);
+      }
+    }
+    const rimMesh = new THREE.Mesh(mergeGeometries(rimGeoms), rimMat);
+    rimMesh.castShadow = true;
+    wheel.add(rimMesh);
+
+    root.add(wheel);
+    return wheel;
+  });
+
+  root.userData.body = body;
+  root.userData.wheels = wheels;
+  return root;
+}
 
 export function createVehicle({ scene, world, palette }) {
   const chassisShape = new CANNON.Box(new CANNON.Vec3(VEHICLE.halfExtents[0], VEHICLE.halfExtents[1], VEHICLE.halfExtents[2]));
@@ -46,37 +157,10 @@ export function createVehicle({ scene, world, palette }) {
   });
 
   // --- Mesh -----------------------------------------------------------
-  const carGroup = new THREE.Group();
-
-  const bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(4, 0.6, 2), new THREE.MeshStandardMaterial({ color: palette.magenta, metalness: 0.3, roughness: 0.4 }));
-  bodyMesh.castShadow = true;
-  carGroup.add(bodyMesh);
-
-  const cabinMesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 1.6), new THREE.MeshStandardMaterial({ color: palette.chip }));
-  cabinMesh.position.set(0.3, 0.55, 0);
-  cabinMesh.castShadow = true;
-  carGroup.add(cabinMesh);
-
-  [-0.6, 0.6].forEach((hz) => {
-    const headlight = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.4), neonMaterial(palette.cyan, 4));
-    headlight.position.set(-2.02, 0, hz);
-    carGroup.add(headlight);
-
-    const taillight = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.4), neonMaterial(palette.amber, 3));
-    taillight.position.set(2.02, 0, hz);
-    carGroup.add(taillight);
-  });
-
-  scene.add(carGroup);
-
-  const wheelMeshes = VEHICLE.wheelPositions.map(() => {
-    const geom = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 16);
-    geom.rotateX(Math.PI / 2);
-    const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: palette.chip }));
-    mesh.castShadow = true;
-    scene.add(mesh);
-    return mesh;
-  });
+  const car = buildSlot('car', () => buildCarModel(palette));
+  scene.add(car);
+  const carGroup = car.userData.body;
+  const wheelMeshes = car.userData.wheels;
 
   // --- Dynamics ---------------------------------------------------------
   let steer = 0;
@@ -153,8 +237,7 @@ export function createVehicle({ scene, world, palette }) {
   }
 
   function setVisible(on) {
-    carGroup.visible = on;
-    wheelMeshes.forEach((m) => { m.visible = on; });
+    car.visible = on;
   }
 
   function sync() {

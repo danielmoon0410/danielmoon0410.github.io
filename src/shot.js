@@ -21,7 +21,7 @@ function nextTick() {
   });
 }
 
-const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'touch-controls', 'panel', 'view-2d'];
+const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'touch-controls', 'panel', 'view-2d', 'minimap'];
 
 function isUiHidden() {
   return CHROME_IDS.every((id) => {
@@ -46,14 +46,28 @@ export async function runShot({ app, canvas, stationId }) {
   }
 
   try {
-    if (!STATIONS.some((s) => s.id === stationId)) return fail('unknown station');
+    const isStation = STATIONS.some((s) => s.id === stationId);
+    const isView = Object.prototype.hasOwnProperty.call(SHOT.views, stationId);
+    if (!isStation && !isView) return fail('unknown station');
     if (!app || !canvas) return fail('webgl unavailable');
 
-    const pos = app.internals.padPosition(stationId);
-    if (!pos) return fail('no pad');
-
-    const [dx, dz] = SHOT.facing[stationId] || SHOT.defaultFacing;
-    app.internals.placeCarAt(pos.x, pos.z, dx, dz);
+    let px;
+    let pz;
+    let dx;
+    let dz;
+    if (isView) {
+      const view = SHOT.views[stationId];
+      px = view.x;
+      pz = view.z;
+      [dx, dz] = view.facing;
+    } else {
+      const pos = app.internals.padPosition(stationId);
+      if (!pos) return fail('no pad');
+      px = pos.x;
+      pz = pos.z;
+      [dx, dz] = SHOT.facing[stationId] || SHOT.defaultFacing;
+    }
+    app.internals.placeCarAt(px, pz, dx, dz);
 
     const t0 = performance.now();
     let ticks = 0;

@@ -1,33 +1,44 @@
-// Builds the 3D side: render/physics setup, world + scenery, vehicle, the
-// main loop, camera follow, quality scaling and the pad -> UI bridge.
+// Builds the 3D side: render/physics setup, world + campus + stations, the
+// vehicle, the main loop, camera follow, quality scaling and the pad -> UI
+// bridge.
 import * as THREE from 'three';
-import { SEED, SPAWN, CAMERA, RENDER, QUALITY } from './config.js';
-import { mulberry32, readPalette, createRenderer, createScene, createPhysics, buildWorld, setShadowSize, wireComposer } from './world.js';
+import { SEED, SPAWN, CAMERA, RENDER, QUALITY, WORLD_BOUNDS } from './config.js';
+import { mulberry32, readPalette, createRenderer, createScene, createPhysics, buildWorld, setShadowSize, wirePost } from './world.js';
+import { buildCampus } from './campus.js';
 import { buildStations } from './stations.js';
 import { buildLetters } from './letters.js';
 import { createVehicle } from './vehicle.js';
 import { createInput } from './input.js';
 import { getView, setPromptStation, getOpenPanelId, closePanel } from './ui.js';
+import { createMinimap } from './minimap.js';
+import { SLOT_NAMES } from './assets.js';
 
 export async function buildApp({ canvas, touch, onStep }) {
   const palette = readPalette();
-  const { renderer, composer, bloomPass, setBloom, resize } = createRenderer(canvas);
-  const { scene, camera, sun } = createScene(palette);
-  wireComposer(composer, scene, camera, bloomPass);
+  const { renderer, composer, resize } = createRenderer(canvas);
+  const { scene, camera, sun } = createScene(palette, renderer);
+  const { gtaoPass, bloomPass, smaaPass } = wirePost(composer, scene, camera);
   const { world } = createPhysics();
   await onStep('renderer');
 
+  const maxAnisotropy = Math.min(RENDER.maxAnisotropy, renderer.capabilities.getMaxAnisotropy());
+
   const rng = mulberry32(SEED);
-  buildWorld({ scene, world, palette, rng });
+  buildWorld({ scene, world, palette, rng, maxAnisotropy });
   await onStep('world');
 
-  const stations = buildStations({ scene, world, palette, rng });
+  const campus = buildCampus({ scene, world, palette, rng, maxAnisotropy });
+  await onStep('campus');
+
+  const stations = buildStations({ scene, world, palette, maxAnisotropy });
   await onStep('stations');
 
   const letters = buildLetters({ scene, world, palette });
   await onStep('letters');
 
   const vehicle = createVehicle({ scene, world, palette });
+
+  const minimap = createMinimap();
 
   const camPos = new THREE.Vector3();
   const camLook = new THREE.Vector3();
@@ -84,7 +95,9 @@ export async function buildApp({ canvas, touch, onStep }) {
   function applyQualityLevel(index) {
     const level = QUALITY.levels[index];
     setShadowSize(sun, level.shadow);
-    setBloom(level.bloom);
+    gtaoPass.enabled = level.ao;
+    bloomPass.enabled = level.bloom;
+    smaaPass.enabled = level.aa;
     document.body.dataset.quality = level.name;
   }
   applyQualityLevel(0);
@@ -185,6 +198,7 @@ export async function buildApp({ canvas, touch, onStep }) {
 
     updateCameraSmooth(dt);
     updateSun();
+    minimap.update(vehicle.position(), vehicle.forward());
 
     sampleQuality(lastTime, rawDeltaMs);
 
@@ -198,6 +212,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     running = true;
     lastTime = performance.now();
     resetQualityWindow(lastTime);
+    minimap.enable();
     frameHandle = scheduleFrame(frame);
   }
 
@@ -224,6 +239,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     camera.aspect = aspect;
     camera.fov = aspect < 1 ? CAMERA.fovPortrait : CAMERA.fov;
     camera.updateProjectionMatrix();
+    minimap.resize();
   }
   window.addEventListener('resize', handleResize);
 
@@ -256,6 +272,54 @@ export async function buildApp({ canvas, touch, onStep }) {
     setRender: (on) => { renderEnabled = Boolean(on); },    // test-only: frame() skips composer.render() while off
     renderCount: () => renderCount,                         // frames rendered by the loop (renderOnce not counted)
     setCarVisible: (on) => vehicle.setVisible(Boolean(on)),
+    worldBounds: () => ({ ...WORLD_BOUNDS }),
+    posterInfo: () => campus.posterInfo(),
+    bloomSettings: () => ({ strength: bloomPass.strength, radius: bloomPass.radius, threshold: bloomPass.threshold, enabled: bloomPass.enabled }),
+    toneInfo: () => ({
+      name: renderer.toneMapping === THREE.ACESFilmicToneMapping ? 'ACESFilmic' : (renderer.toneMapping === THREE.AgXToneMapping ? 'AgX' : String(renderer.toneMapping)),
+      exposure: renderer.toneMappingExposure,
+    }),
+    forEachMesh: (fn) => scene.traverse((o) => { if (o.isMesh) fn(o); }),
+    assetSlots: () => {
+      const n = {};
+      SLOT_NAMES.forEach((k) => { n[k] = 0; });
+      scene.traverse((o) => { const k = o.userData.assetSlot; if (k in n) n[k] += 1; });
+      return n;
+    },
+    probeSkyLuma: () => {
+      const savedQuat = camera.quaternion.clone();
+      camera.lookAt(camera.position.x, camera.position.y + 100, camera.position.z - 1);
+      composer.render();
+      renderer.setRenderTarget(null);
+
+      const gl = renderer.getContext();
+      const dw = gl.drawingBufferWidth;
+      const dh = gl.drawingBufferHeight;
+      const cx = Math.max(0, Math.floor(dw / 2) - 4);
+      const cy = Math.max(0, Math.floor(dh / 2) - 4);
+      const pixels = new Uint8Array(8 * 8 * 4);
+      gl.readPixels(cx, cy, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+      camera.quaternion.copy(savedQuat);
+
+      let sum = 0;
+      for (let i = 0; i < 64; i++) {
+        const r = pixels[i * 4];
+        const g = pixels[i * 4 + 1];
+        const b = pixels[i * 4 + 2];
+        sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+      return sum / 64;
+    },
+    renderStats: () => {
+      renderer.info.autoReset = false;
+      renderer.info.reset();
+      renderer.render(scene, camera);
+      const { calls, triangles } = renderer.info.render;
+      const bodies = world.bodies.length;
+      renderer.info.autoReset = true;
+      return { calls, triangles, bodies };
+    },
   };
 
   return { start, pause, resume, carPosition, quality, internals };

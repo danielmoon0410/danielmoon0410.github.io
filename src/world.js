@@ -1,5 +1,5 @@
-// Palette reader, renderer + post-processing, scene, physics world, floor,
-// roads, traces, chips, walls, road math and the seeded RNG.
+// Palette reader, renderer + post-processing, scene (sky/sun/fog), physics
+// world, floor, lawns, roads, inlays, walls, road math and the seeded RNG.
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -7,6 +7,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import {
   MAX_PIXEL_RATIO,
   WORLD_BOUNDS,
@@ -17,7 +19,11 @@ import {
   SCENERY,
   CAMERA,
   RENDER,
+  SEED,
+  CAMPUS,
+  PAD_RADIUS,
 } from './config.js';
+import { buildSlot } from './assets.js';
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -31,6 +37,17 @@ export function mulberry32(seed) {
 }
 
 const COLOR_KEYS = ['bg', 'floor', 'grid', 'road', 'trace', 'cyan', 'magenta', 'amber', 'violet', 'chip', 'pin', 'text', 'muted'];
+
+// The 37 --w-* names from css/style.css :root, without the prefix, excluding "sign".
+const WORLD_KEYS = [
+  'sky-top', 'sky-mid', 'sky-horizon', 'ground-far', 'sun', 'white',
+  'paving', 'paving-joint', 'inlay', 'road', 'road-line',
+  'lawn', 'leaf', 'leaf-2', 'trunk',
+  'concrete', 'steel', 'glass', 'spandrel', 'roof-a', 'roof-b', 'water', 'pad', 'robot',
+  'ink', 'ink-muted', 'orange', 'orange-deep', 'lamp',
+  'tyre', 'rim', 'car-glass',
+  'acc-trace', 'acc-cyan', 'acc-magenta', 'acc-amber', 'acc-violet',
+];
 
 export function readPalette() {
   const styles = getComputedStyle(document.documentElement);
@@ -51,15 +68,124 @@ export function readPalette() {
   palette.css = css;
   palette.font = styles.getPropertyValue('--font-ui').trim();
 
+  const w = {};
+  const wcss = {};
+  for (const key of WORLD_KEYS) {
+    const value = styles.getPropertyValue(`--w-${key}`).trim();
+    if (!value) throw new Error(`Missing CSS variable --w-${key}`);
+    wcss[key] = value;
+    w[key] = new THREE.Color(value);
+  }
+  const signValue = styles.getPropertyValue('--w-sign').trim();
+  if (!signValue) throw new Error('Missing CSS variable --w-sign');
+  wcss.sign = signValue;
+
+  palette.w = w;
+  palette.wcss = wcss;
+
   return palette;
 }
 
-export function neonMaterial(color, k) {
-  return new THREE.MeshBasicMaterial({ color: color.clone().multiplyScalar(k) });
+// color is a THREE.Color; only for meshes whose own geometry has a bounding
+// radius <= 0.6 m (see look:emissive in selftest.js).
+export function statusLightMaterial(color, intensity = 3) {
+  const material = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: intensity, roughness: 0.4 });
+  material.userData.statusLight = true;
+  return material;
+}
+
+export function segmentAABB(x1, z1, x2, z2, expand) {
+  return {
+    minX: Math.min(x1, x2) - expand,
+    maxX: Math.max(x1, x2) + expand,
+    minZ: Math.min(z1, z2) - expand,
+    maxZ: Math.max(z1, z2) + expand,
+  };
+}
+
+export function aabbOverlap(a, b) {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
+}
+
+export function circleOverlapsAABB(cx, cz, r, box) {
+  const nx = Math.max(box.minX, Math.min(cx, box.maxX));
+  const nz = Math.max(box.minZ, Math.min(cz, box.maxZ));
+  const dx = cx - nx;
+  const dz = cz - nz;
+  return dx * dx + dz * dz <= r * r;
+}
+
+// hex is a plain "#rrggbb" string, as read from a --w-* custom property.
+function hexToRgba(hex, a) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+// Equirect sky: row 0 is the zenith, row H/2 the horizon. Used as both
+// scene.background and (via PMREM) scene.environment.
+function buildSkyTexture(palette) {
+  const { width, height } = RENDER.sky;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  const grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, palette.wcss['sky-top']);
+  grad.addColorStop(0.3, palette.wcss['sky-mid']);
+  grad.addColorStop(0.47, palette.wcss['sky-horizon']);
+  grad.addColorStop(0.5, palette.wcss['sky-horizon']);
+  grad.addColorStop(0.53, palette.wcss['ground-far']);
+  grad.addColorStop(1.0, palette.wcss['ground-far']);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+
+  const cloudRng = mulberry32(SEED + 7);
+  for (let i = 0; i < RENDER.sky.clouds; i++) {
+    const cy = height * (0.28 + cloudRng() * (0.44 - 0.28));
+    const cx = cloudRng() * width;
+    const rx = 60 + cloudRng() * 100;
+    const ry = 10 + cloudRng() * 16;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(rx, ry);
+    const cloudGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    cloudGrad.addColorStop(0, hexToRgba(palette.wcss.white, 0.55));
+    cloudGrad.addColorStop(1, hexToRgba(palette.wcss.white, 0));
+    ctx.fillStyle = cloudGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const off = RENDER.sunOffset;
+  const len = Math.sqrt(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]) || 1;
+  const dx = off[0] / len;
+  const dy = off[1] / len;
+  const dz = off[2] / len;
+  const u = Math.atan2(dz, dx) / (2 * Math.PI) + 0.5;
+  const v = Math.asin(Math.max(-1, Math.min(1, dy))) / Math.PI + 0.5;
+  const sx = u * width;
+  const sy = (1 - v) * height;
+  const r = RENDER.sky.sunGlowPx;
+  const sunGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+  sunGrad.addColorStop(0, hexToRgba(palette.wcss.sun, 0.9));
+  sunGrad.addColorStop(1, hexToRgba(palette.wcss.sun, 0));
+  ctx.fillStyle = sunGrad;
+  ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  return texture;
 }
 
 export function createRenderer(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
   const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
   renderer.setPixelRatio(pixelRatio);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -73,50 +199,44 @@ export function createRenderer(canvas) {
 
   // RenderPass needs the real scene and camera, which do not exist until
   // createScene() runs afterwards in the same 'renderer' build step, so the
-  // composer starts empty; app3d.js finishes wiring it via wireComposer().
+  // composer starts empty; app3d.js finishes wiring it via wirePost().
   const composer = new EffectComposer(renderer);
   composer.setPixelRatio(pixelRatio);
   composer.setSize(width, height);
-  const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), RENDER.bloom.strength, RENDER.bloom.radius, RENDER.bloom.threshold);
-
-  function setBloom(b) {
-    bloomPass.enabled = b;
-  }
 
   function resize(w, h) {
     renderer.setSize(w, h, false);
     composer.setSize(w, h);
   }
 
-  return { renderer, composer, bloomPass, setBloom, resize };
+  return { renderer, composer, resize };
 }
 
-// Adds RenderPass -> bloomPass -> OutputPass to a composer built by
-// createRenderer(), once the scene and camera it needs both exist.
-export function wireComposer(composer, scene, camera, bloomPass) {
-  composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(bloomPass);
-  composer.addPass(new OutputPass());
-}
-
-export function createScene(palette) {
+export function createScene(palette, renderer) {
   const scene = new THREE.Scene();
-  scene.background = palette.bg;
-  scene.fog = new THREE.Fog(palette.bg, RENDER.fog.near, RENDER.fog.far);
 
-  const hemi = new THREE.HemisphereLight(palette.cyan, palette.floor, 0.5);
+  const sky = buildSkyTexture(palette);
+  scene.background = sky;
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromEquirectangular(sky).texture;
+  pmrem.dispose();
+
+  scene.fog = new THREE.Fog(palette.w['sky-horizon'], RENDER.fog.near, RENDER.fog.far);
+
+  const hemi = new THREE.HemisphereLight(palette.w['sky-mid'], palette.w.paving, RENDER.hemiIntensity);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(palette.text, 2.2);
+  const sun = new THREE.DirectionalLight(palette.w.sun, RENDER.sunIntensity);
   sun.castShadow = true;
   sun.shadow.camera.left = -RENDER.shadowExtent;
   sun.shadow.camera.right = RENDER.shadowExtent;
   sun.shadow.camera.top = RENDER.shadowExtent;
   sun.shadow.camera.bottom = -RENDER.shadowExtent;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 120;
-  sun.shadow.bias = -0.0005;
-  sun.shadow.normalBias = 0.02;
+  sun.shadow.camera.far = 200;
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.04;
   sun.shadow.mapSize.set(2048, 2048);
   scene.add(sun);
   scene.add(sun.target);
@@ -126,6 +246,43 @@ export function createScene(palette) {
   const camera = new THREE.PerspectiveCamera(fov, aspect, CAMERA.near, CAMERA.far);
 
   return { scene, camera, sun };
+}
+
+// Hides label sprites from GTAO's normal/depth pre-pass so they don't cast
+// fake AO, and renders the AO buffer at a fraction of the screen resolution.
+class SceneAOPass extends GTAOPass {
+  overrideVisibility() {
+    super.overrideVisibility();
+    this.scene.traverse((o) => {
+      if (o.isSprite) o.visible = false;
+    });
+  }
+
+  setSize(width, height) {
+    const s = RENDER.ao.resolutionScale;
+    super.setSize(Math.max(1, Math.round(width * s)), Math.max(1, Math.round(height * s)));
+  }
+}
+
+// RenderPass -> GTAO (half res) -> bloom -> OutputPass (ACES) -> SMAA.
+export function wirePost(composer, scene, camera) {
+  composer.addPass(new RenderPass(scene, camera));
+
+  const gtaoPass = new SceneAOPass(scene, camera, 1, 1);
+  const { radius, thickness, scale, samples } = RENDER.ao;
+  gtaoPass.updateGtaoMaterial({ radius, thickness, scale, samples });
+  gtaoPass.blendIntensity = RENDER.ao.blend;
+  composer.addPass(gtaoPass);
+
+  const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), RENDER.bloom.strength, RENDER.bloom.radius, RENDER.bloom.threshold);
+  composer.addPass(bloomPass);
+
+  composer.addPass(new OutputPass());
+
+  const smaaPass = new SMAAPass(1, 1);
+  composer.addPass(smaaPass);
+
+  return { gtaoPass, bloomPass, smaaPass };
 }
 
 export function setShadowSize(sun, n) {
@@ -154,82 +311,147 @@ export function createPhysics() {
   return { world };
 }
 
-function segmentAABB(x1, z1, x2, z2, expand) {
-  return {
-    minX: Math.min(x1, x2) - expand,
-    maxX: Math.max(x1, x2) + expand,
-    minZ: Math.min(z1, z2) - expand,
-    maxZ: Math.max(z1, z2) + expand,
-  };
-}
-
-function aabbOverlap(a, b) {
-  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
-}
-
-function circleOverlapsAABB(cx, cz, r, box) {
-  const nx = Math.max(box.minX, Math.min(cx, box.maxX));
-  const nz = Math.max(box.minZ, Math.min(cz, box.maxZ));
-  const dx = cx - nx;
-  const dz = cz - nz;
-  return dx * dx + dz * dz <= r * r;
-}
-
-function buildFloor(scene, palette) {
-  const width = WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX;
-  const depth = WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ;
+function buildFloor(scene, palette, rng, maxAnisotropy) {
+  const width = WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX + 800;
+  const depth = WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ + 800;
 
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
+  canvas.width = 512;
+  canvas.height = 512;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = palette.css.floor;
-  ctx.fillRect(0, 0, 256, 256);
-  ctx.strokeStyle = palette.css.grid;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, 254, 254);
+  ctx.fillStyle = palette.wcss.paving;
+  ctx.fillRect(0, 0, 512, 512);
+
+  ctx.strokeStyle = palette.wcss['paving-joint'];
+  ctx.lineWidth = 3;
+  for (let i = 1; i < 4; i++) {
+    const p = (i * 512) / 4;
+    ctx.beginPath();
+    ctx.moveTo(p, 0);
+    ctx.lineTo(p, 512);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, p);
+    ctx.lineTo(512, p);
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 2000; i++) {
+    const x = rng() * 512;
+    const y = rng() * 512;
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = i % 2 === 0 ? palette.wcss['paving-joint'] : palette.wcss.white;
+    ctx.fillRect(x, y, 2, 2);
+  }
+  ctx.globalAlpha = 1;
 
   const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(width / 4, depth / 4);
+  texture.repeat.set(width / RENDER.floorTileMeters, depth / RENDER.floorTileMeters);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = maxAnisotropy;
 
   const geometry = new THREE.PlaneGeometry(width, depth);
   geometry.rotateX(-Math.PI / 2);
-  const material = new THREE.MeshStandardMaterial({ map: texture });
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.92 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set((WORLD_BOUNDS.minX + WORLD_BOUNDS.maxX) / 2, 0, (WORLD_BOUNDS.minZ + WORLD_BOUNDS.maxZ) / 2);
   mesh.receiveShadow = true;
   scene.add(mesh);
 }
 
-function buildRoads(scene, palette) {
-  ROADS.forEach(([x1, z1, x2, z2], i) => {
+function buildLawns(scene, palette) {
+  const geometries = CAMPUS.lawns.map((r) => {
+    const w = r.maxX - r.minX;
+    const d = r.maxZ - r.minZ;
+    const cx = (r.minX + r.maxX) / 2;
+    const cz = (r.minZ + r.maxZ) / 2;
+    const g = new THREE.BoxGeometry(w, 0.03, d);
+    g.translate(cx, 0.015, cz); // 0.03 m thick, top at y 0.03
+    return g;
+  });
+  const merged = mergeGeometries(geometries);
+  const material = new THREE.MeshStandardMaterial({ color: palette.w.lawn, roughness: 0.95 });
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+}
+
+function distanceToSegment(px, pz, x1, z1, x2, z2) {
+  const dx = x2 - x1;
+  const dz = z2 - z1;
+  const lenSq = dx * dx + dz * dz;
+  let t = lenSq > 0 ? ((px - x1) * dx + (pz - z1) * dz) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + dx * t;
+  const cz = z1 + dz * t;
+  return Math.hypot(px - cx, pz - cz);
+}
+
+function buildRoadTiles(palette) {
+  const group = new THREE.Group();
+
+  const surfaceGeoms = ROADS.map(([x1, z1, x2, z2], i) => {
     const dx = x2 - x1;
     const dz = z2 - z1;
     const len = Math.sqrt(dx * dx + dz * dz);
     const angle = Math.atan2(dz, dx);
     const cx = (x1 + x2) / 2;
     const cz = (z1 + z2) / 2;
-
-    const geometry = new THREE.BoxGeometry(len + ROAD_WIDTH, 0.04, ROAD_WIDTH);
-    const material = new THREE.MeshStandardMaterial({ color: palette.road, emissive: palette.trace, emissiveIntensity: 0.25 });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(cx, 0.02 + i * 0.002, cz);
-    mesh.rotation.y = -angle;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-
-    const stripGeometry = new THREE.BoxGeometry(len, 0.01, 0.25);
-    const stripMesh = new THREE.Mesh(stripGeometry, neonMaterial(palette.trace, 3));
-    stripMesh.position.set(cx, 0.07, cz);
-    stripMesh.rotation.y = -angle;
-    scene.add(stripMesh);
+    const g = new THREE.BoxGeometry(len + ROAD_WIDTH, 0.04, ROAD_WIDTH);
+    g.rotateY(-angle);
+    g.translate(cx, 0.02 + i * 0.002, cz);
+    return g;
   });
+  const surfaceMesh = new THREE.Mesh(
+    mergeGeometries(surfaceGeoms),
+    new THREE.MeshStandardMaterial({ color: palette.w.road, roughness: 0.85 })
+  );
+  surfaceMesh.receiveShadow = true;
+  group.add(surfaceMesh);
+
+  const pads = Object.values(PADS);
+  const dashGeoms = [];
+  ROADS.forEach(([x1, z1, x2, z2], i) => {
+    const dx = x2 - x1;
+    const dz = z2 - z1;
+    const len = Math.sqrt(dx * dx + dz * dz);
+    const angle = Math.atan2(dz, dx);
+    const ux = dx / len;
+    const uz = dz / len;
+    for (let d = 3; d < len; d += 6) {
+      const px = x1 + ux * d;
+      const pz = z1 + uz * d;
+
+      const nearOtherRoad = ROADS.some(([ox1, oz1, ox2, oz2], j) => {
+        if (j === i) return false;
+        return distanceToSegment(px, pz, ox1, oz1, ox2, oz2) < ROAD_WIDTH / 2 + 1.5;
+      });
+      if (nearOtherRoad) continue;
+
+      const nearPad = pads.some((p) => Math.hypot(px - p.x, pz - p.z) < PAD_RADIUS + 1.5);
+      if (nearPad) continue;
+
+      const g = new THREE.BoxGeometry(3, 0.01, 0.25);
+      g.rotateY(-angle);
+      g.translate(px, 0.065, pz);
+      dashGeoms.push(g);
+    }
+  });
+  if (dashGeoms.length > 0) {
+    const dashMesh = new THREE.Mesh(
+      mergeGeometries(dashGeoms),
+      new THREE.MeshStandardMaterial({ color: palette.w['road-line'], roughness: 0.6 })
+    );
+    group.add(dashMesh);
+  }
+
+  return group;
 }
 
-function buildTraces(scene, palette, rng) {
+// The old buildTraces, now drawn inside the plazas only and much subtler.
+function buildInlays(scene, palette, rng) {
   const roadAABBs = ROADS.map(([x1, z1, x2, z2]) => segmentAABB(x1, z1, x2, z2, ROAD_WIDTH / 2));
   const pads = Object.values(PADS);
   const geometries = [];
@@ -237,25 +459,25 @@ function buildTraces(scene, palette, rng) {
   let attempts = 0;
   let placed = 0;
 
-  while (placed < SCENERY.traceCount && attempts < SCENERY.traceCount * 25) {
+  while (placed < SCENERY.inlayCount && attempts < SCENERY.inlayCount * 25) {
     attempts++;
+    const plaza = CAMPUS.plazas[Math.floor(rng() * CAMPUS.plazas.length)];
     const horizontal = rng() < 0.5;
     const length = 6 + rng() * 18;
-    const x = WORLD_BOUNDS.minX + rng() * (WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX);
-    const z = WORLD_BOUNDS.minZ + rng() * (WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ);
+    const x = plaza.minX + rng() * (plaza.maxX - plaza.minX);
+    const z = plaza.minZ + rng() * (plaza.maxZ - plaza.minZ);
 
     const halfW = horizontal ? length / 2 : 0.15;
     const halfD = horizontal ? 0.15 : length / 2;
     const box = { minX: x - halfW, maxX: x + halfW, minZ: z - halfD, maxZ: z + halfD };
-    const expanded = { minX: box.minX - 5, maxX: box.maxX + 5, minZ: box.minZ - 5, maxZ: box.maxZ + 5 };
+    const roadBox = { minX: box.minX - 2, maxX: box.maxX + 2, minZ: box.minZ - 2, maxZ: box.maxZ + 2 };
 
-    if (box.minX < WORLD_BOUNDS.minX || box.maxX > WORLD_BOUNDS.maxX || box.minZ < WORLD_BOUNDS.minZ || box.maxZ > WORLD_BOUNDS.maxZ) continue;
-    if (roadAABBs.some((r) => aabbOverlap(expanded, r))) continue;
-    if (pads.some((p) => circleOverlapsAABB(p.x, p.z, 8, expanded))) continue;
-    if (SCENERY_ZONES.some((zn) => aabbOverlap(expanded, zn))) continue;
+    if (roadAABBs.some((r) => aabbOverlap(roadBox, r))) continue;
+    if (pads.some((p) => circleOverlapsAABB(p.x, p.z, 8, box))) continue;
+    if (SCENERY_ZONES.some((zn) => aabbOverlap(box, zn))) continue;
 
-    const geometry = new THREE.BoxGeometry(horizontal ? length : 0.3, 0.02, horizontal ? 0.3 : length);
-    geometry.translate(x, 0.05, z);
+    const geometry = new THREE.BoxGeometry(horizontal ? length : 0.3, 0.01, horizontal ? 0.3 : length);
+    geometry.translate(x, 0.012, z);
     geometries.push(geometry);
     const ex = horizontal ? length / 2 : 0;
     const ez = horizontal ? 0 : length / 2;
@@ -265,94 +487,21 @@ function buildTraces(scene, palette, rng) {
 
   if (geometries.length > 0) {
     const merged = mergeGeometries(geometries);
-    scene.add(new THREE.Mesh(merged, neonMaterial(palette.trace, 1.2)));
+    const material = new THREE.MeshStandardMaterial({ color: palette.w.inlay, roughness: 0.7 });
+    scene.add(new THREE.Mesh(merged, material));
   }
 
   if (viaPositions.length > 0) {
     const viaGeom = new THREE.CylinderGeometry(0.45, 0.45, 0.06, 12);
-    const viaMesh = new THREE.InstancedMesh(viaGeom, neonMaterial(palette.trace, 2), viaPositions.length);
+    const viaMat = new THREE.MeshStandardMaterial({ color: palette.w.steel, metalness: 0.6, roughness: 0.4 });
+    const viaMesh = new THREE.InstancedMesh(viaGeom, viaMat, viaPositions.length);
     const m = new THREE.Matrix4();
     viaPositions.forEach(([vx, vz], i) => {
-      m.makeTranslation(vx, 0.07, vz);
+      m.makeTranslation(vx, 0.02, vz);
       viaMesh.setMatrixAt(i, m);
     });
     scene.add(viaMesh);
   }
-}
-
-function buildChips(scene, world, palette, rng) {
-  const roadAABBs = ROADS.map(([x1, z1, x2, z2]) => segmentAABB(x1, z1, x2, z2, ROAD_WIDTH / 2));
-  const pads = Object.values(PADS);
-  const placed = [];
-  const accentCycle = [palette.cyan, palette.magenta, palette.amber, palette.violet];
-  const pinMatrices = [];
-  let attempts = 0;
-  let colorIndex = 0;
-
-  const marginMinX = WORLD_BOUNDS.minX + 8;
-  const marginMaxX = WORLD_BOUNDS.maxX - 8;
-  const marginMinZ = WORLD_BOUNDS.minZ + 8;
-  const marginMaxZ = WORLD_BOUNDS.maxZ - 8;
-
-  while (placed.length < SCENERY.chipCount && attempts < 400) {
-    attempts++;
-    const w = 5 + rng() * 5;
-    const d = 4 + rng() * 4;
-    const h = 0.8 + rng() * 0.8;
-    const x = marginMinX + rng() * (marginMaxX - marginMinX);
-    const z = marginMinZ + rng() * (marginMaxZ - marginMinZ);
-
-    const box = { minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 };
-    const expanded = { minX: box.minX - 3, maxX: box.maxX + 3, minZ: box.minZ - 3, maxZ: box.maxZ + 3 };
-
-    if (box.minX < marginMinX || box.maxX > marginMaxX || box.minZ < marginMinZ || box.maxZ > marginMaxZ) continue;
-    if (roadAABBs.some((r) => aabbOverlap(expanded, r))) continue;
-    if (pads.some((p) => circleOverlapsAABB(p.x, p.z, 10, expanded))) continue;
-    if (SCENERY_ZONES.some((zn) => aabbOverlap(expanded, zn))) continue;
-    if (placed.some((c) => aabbOverlap(expanded, c.box))) continue;
-
-    placed.push({ box, x, z, w, d, h });
-  }
-
-  for (const chip of placed) {
-    const { x, z, w, d, h } = chip;
-
-    const bodyMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(w, h, d),
-      new THREE.MeshStandardMaterial({ color: palette.chip, roughness: 0.5, metalness: 0.3 })
-    );
-    bodyMesh.position.set(x, h / 2, z);
-    bodyMesh.castShadow = true;
-    bodyMesh.receiveShadow = true;
-    scene.add(bodyMesh);
-
-    const dieMesh = new THREE.Mesh(new THREE.BoxGeometry(w / 2, 0.05, d / 2), neonMaterial(accentCycle[colorIndex % accentCycle.length], 1.2));
-    colorIndex++;
-    dieMesh.position.set(x, h + 0.025, z);
-    scene.add(dieMesh);
-
-    const countAlongW = Math.max(1, Math.floor(w / 0.8));
-    for (let side = -1; side <= 1; side += 2) {
-      for (let i = 0; i < countAlongW; i++) {
-        const px = x - w / 2 + (i + 0.5) * (w / countAlongW);
-        const pz = z + (side * d) / 2;
-        pinMatrices.push(new THREE.Matrix4().makeTranslation(px, 0.06, pz));
-      }
-    }
-
-    const body = new CANNON.Body({ type: CANNON.Body.STATIC });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2)));
-    body.position.set(x, h / 2, z);
-    world.addBody(body);
-  }
-
-  if (pinMatrices.length > 0) {
-    const pinMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.25, 0.12, 0.7), new THREE.MeshStandardMaterial({ color: palette.pin }), pinMatrices.length);
-    pinMatrices.forEach((m, i) => pinMesh.setMatrixAt(i, m));
-    scene.add(pinMesh);
-  }
-
-  return placed;
 }
 
 function buildWalls(scene, world, palette) {
@@ -361,7 +510,8 @@ function buildWalls(scene, world, palette) {
   const depth = maxZ - minZ;
   const thickness = 1;
   const colliderHeight = 6;
-  const visualHeight = 1.5;
+  const visualHeight = 1.2;
+  const capHeight = 0.12;
 
   const walls = [
     { cx: (minX + maxX) / 2, cz: minZ - thickness / 2, w: width + thickness * 2, d: thickness },
@@ -370,16 +520,20 @@ function buildWalls(scene, world, palette) {
     { cx: maxX + thickness / 2, cz: (minZ + maxZ) / 2, w: thickness, d: depth + thickness * 2 },
   ];
 
+  const concreteMat = new THREE.MeshStandardMaterial({ color: palette.w.concrete, roughness: 0.85 });
+  const steelMat = new THREE.MeshStandardMaterial({ color: palette.w.steel, metalness: 0.7, roughness: 0.35 });
+
   for (const wall of walls) {
-    const visMesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, visualHeight, wall.d), new THREE.MeshStandardMaterial({ color: palette.chip }));
+    const visMesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, visualHeight, wall.d), concreteMat);
     visMesh.position.set(wall.cx, visualHeight / 2, wall.cz);
     visMesh.castShadow = true;
     visMesh.receiveShadow = true;
     scene.add(visMesh);
 
-    const stripMesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, 0.15, wall.d), neonMaterial(palette.cyan, 1.5));
-    stripMesh.position.set(wall.cx, visualHeight - 0.075, wall.cz);
-    scene.add(stripMesh);
+    const capMesh = new THREE.Mesh(new THREE.BoxGeometry(wall.w, capHeight, wall.d), steelMat);
+    capMesh.position.set(wall.cx, visualHeight + capHeight / 2, wall.cz);
+    capMesh.castShadow = true;
+    scene.add(capMesh);
 
     const body = new CANNON.Body({ type: CANNON.Body.STATIC });
     body.addShape(new CANNON.Box(new CANNON.Vec3(wall.w / 2, colliderHeight / 2, wall.d / 2)));
@@ -388,11 +542,12 @@ function buildWalls(scene, world, palette) {
   }
 }
 
-export function buildWorld({ scene, world, palette, rng }) {
-  buildFloor(scene, palette);
-  buildRoads(scene, palette);
-  buildTraces(scene, palette, rng);
-  buildChips(scene, world, palette, rng);
+export function buildWorld({ scene, world, palette, rng, maxAnisotropy }) {
+  buildFloor(scene, palette, rng, maxAnisotropy);
+  buildLawns(scene, palette);
+  const roadGroup = buildSlot('roadTiles', () => buildRoadTiles(palette));
+  scene.add(roadGroup);
+  buildInlays(scene, palette, rng);
   buildWalls(scene, world, palette);
 }
 

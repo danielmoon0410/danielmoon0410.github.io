@@ -78,7 +78,7 @@ function nextFrame() {
   });
 }
 
-const TOTAL_STEPS = 9;
+const TOTAL_STEPS = 10;
 
 async function boot() {
   if (flags.nowebgl || !hasWebGL()) {
@@ -115,6 +115,9 @@ async function boot() {
       import('three/addons/postprocessing/UnrealBloomPass.js'),
       import('three/addons/postprocessing/OutputPass.js'),
       import('three/addons/utils/BufferGeometryUtils.js'),
+      import('three/addons/postprocessing/GTAOPass.js'),
+      import('three/addons/postprocessing/SMAAPass.js'),
+      import('three/addons/geometries/RoundedBoxGeometry.js'),
     ]);
     await tick();
 

@@ -2,7 +2,7 @@
 // itself (a failing check is reported in the result JSON, not as an error).
 import { STATIONS, SECTIONS, CAREER, CV, FACTS } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
-import { SPAWN, VEHICLE, CAMERA } from './config.js';
+import { SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS } from './config.js';
 import { nearestRoadPoint } from './world.js';
 
 function assert(cond, msg) {
@@ -336,7 +336,7 @@ export async function runSelfTest({ api, app, ui }) {
     await check('drive:hold', async () => {
       app.internals.setRender(false);
       try {
-        app.internals.placeCarAt(45, -46, 0, -1);
+        app.internals.placeCarAt(TEST_LANE.x, TEST_LANE.z, 0, -1);
         await waitSim(1.0, 5000);
         assert(st().input.forward === false, `input.forward should be false before the hold, was ${st().input.forward}`);
 
@@ -456,9 +456,9 @@ export async function runSelfTest({ api, app, ui }) {
         const lastLate = lateSamples[lateSamples.length - 1].v;
         assert(lastLate >= 0.9 * VEHICLE.maxSpeed, `A5: last sample speed ${lastLate.toFixed(2)} < ${(0.9 * VEHICLE.maxSpeed).toFixed(2)}`);
 
-        const dist = -46 - endPos.z;
+        const dist = TEST_LANE.z - endPos.z;
         assert(dist >= 30, `A6: distance ${dist.toFixed(2)} m < 30 m`);
-        assert(Math.abs(endPos.x - 45) <= 1.5, `A6: x drift ${(endPos.x - 45).toFixed(2)} exceeds 1.5`);
+        assert(Math.abs(endPos.x - TEST_LANE.x) <= 1.5, `A6: x drift ${(endPos.x - TEST_LANE.x).toFixed(2)} exceeds 1.5`);
 
         const holdTilt = samples.reduce((m, s) => Math.max(m, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll)), 0);
         assert(holdTilt <= 0.5, `A7: max hold |tilt| ${holdTilt.toFixed(2)} deg > 0.5`);
@@ -506,7 +506,7 @@ export async function runSelfTest({ api, app, ui }) {
         const brakeR = [];
         const go = [];
 
-        app.internals.placeCarAt(45, -46, 0, -1);
+        app.internals.placeCarAt(TEST_LANE.x, TEST_LANE.z, 0, -1);
         await waitSim(1.0, 5000);
         const b0 = st().input;
         assert(
@@ -567,7 +567,7 @@ export async function runSelfTest({ api, app, ui }) {
           maxTilt = Math.max(maxTilt, Math.abs(s.tilt.pitch), Math.abs(s.tilt.roll));
           yMin = Math.min(yMin, s.y);
           yMax = Math.max(yMax, s.y);
-          xDrift = Math.max(xDrift, Math.abs(s.x - 45));
+          xDrift = Math.max(xDrift, Math.abs(s.x - TEST_LANE.x));
         }
         assert(maxTilt <= 0.5, `B9: max |tilt| ${maxTilt.toFixed(2)} deg > 0.5`);
         assert(yMin >= 0.55 && yMax <= 0.95, `B10: y range [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] outside [0.55, 0.95]`);
@@ -756,6 +756,251 @@ export async function runSelfTest({ api, app, ui }) {
       assert(pr <= 2, `pixelRatio ${pr} > 2`);
     });
 
+    await check('world:bounds', () => {
+      const wb = app.internals.worldBounds();
+      const width = wb.maxX - wb.minX;
+      const depth = wb.maxZ - wb.minZ;
+      assert(width >= 480 && depth >= 675, `world bounds ${width}x${depth} smaller than 480x675`);
+
+      const xs = [];
+      const zs = [];
+      for (const station of STATIONS) {
+        const pos = app.internals.padPosition(station.id);
+        if (pos) {
+          xs.push(pos.x);
+          zs.push(pos.z);
+        }
+      }
+      const padW = Math.max(...xs) - Math.min(...xs);
+      const padD = Math.max(...zs) - Math.min(...zs);
+      const padArea = padW * padD;
+      assert(padArea >= 6 * 16380, `pad bbox area ${padArea.toFixed(0)} < ${6 * 16380}`);
+
+      const areaX = (width * depth) / (160 * 225);
+      const padAreaX = padArea / 16380;
+      return `size=${width}x${depth} areaX=${areaX.toFixed(2)} padAreaX=${padAreaX.toFixed(2)}`;
+    });
+
+    await check('world:wall', async () => {
+      app.internals.setRender(false);
+      try {
+        app.internals.placeCarAt(0, 36, 0, 1);
+        await waitSim(0.5, 5000);
+        dispatchKey('keydown', 'KeyW');
+        await waitSim(4.0, 15000);
+        const pos = api.carPosition();
+        assert(
+          pos.z <= WORLD_BOUNDS.maxZ - 1.5,
+          `z ${pos.z.toFixed(2)} > maxZ-1.5 (${(WORLD_BOUNDS.maxZ - 1.5).toFixed(2)}); the boundary did not stop it`
+        );
+        assert(
+          pos.z >= WORLD_BOUNDS.maxZ - 6,
+          `z ${pos.z.toFixed(2)} < maxZ-6 (${(WORLD_BOUNDS.maxZ - 6).toFixed(2)}); it did not reach the wall`
+        );
+        assert(Math.abs(pos.x) <= 3, `x drifted ${pos.x.toFixed(2)} beyond 3`);
+        assert(pos.y >= 0.4 && pos.y <= 1.5, `y ${pos.y.toFixed(2)} outside [0.4, 1.5]`);
+        return `z=${pos.z.toFixed(2)} x=${pos.x.toFixed(2)} y=${pos.y.toFixed(2)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        app.internals.setRender(true);
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
+    });
+
+    await check('poster:text', () => {
+      const info = app.internals.posterInfo();
+      const [h5a, h5b] = FACTS.H5.split(' — ');
+      const [h1ko, h1en] = FACTS.H1.split(' — ');
+      const [h2label, h2rest] = FACTS.H2.split(' — ');
+      const h2stages = h2rest.split(' · ');
+      const expected = [h5a, h5b, h1ko, h1en, h2label, ...h2stages, FACTS.H4];
+      assert(JSON.stringify(info.lines) === JSON.stringify(expected), `poster lines mismatch: ${JSON.stringify(info.lines)}`);
+      assert(h1en.length > 0, 'h1en is empty');
+      assert(info.source === 'procedural', `source was ${info.source}`);
+      assert(info.z <= WORLD_BOUNDS.minZ + 30, `poster z ${info.z} > minZ+30`);
+      assert(info.width >= 100 && info.height >= 25, `poster size ${info.width}x${info.height} too small`);
+      assert(info.normalZ > 0.99, `normalZ ${info.normalZ} <= 0.99`);
+      return `lines=${info.lines.length} width=${info.width.toFixed(1)} height=${info.height.toFixed(1)} normalZ=${info.normalZ.toFixed(3)}`;
+    });
+
+    await check('look:post', () => {
+      const bloom = app.internals.bloomSettings();
+      const tone = app.internals.toneInfo();
+      assert(bloom.strength <= 0.25, `bloom strength ${bloom.strength} > 0.25`);
+      assert(bloom.threshold >= 1.0, `bloom threshold ${bloom.threshold} < 1.0`);
+      assert(tone.name === 'ACESFilmic' || tone.name === 'AgX', `tone name was ${tone.name}`);
+      assert(tone.exposure >= 1.05, `exposure ${tone.exposure} < 1.05`);
+      return `strength=${bloom.strength} threshold=${bloom.threshold} tone=${tone.name} exposure=${tone.exposure}`;
+    });
+
+    await check('look:emissive', () => {
+      const offenders = [];
+      let statusLightCount = 0;
+
+      app.internals.forEachMesh((mesh) => {
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mat of materials) {
+          if (!mat) continue;
+          const label = (mesh.geometry && mesh.geometry.type) || mesh.type || 'mesh';
+
+          if (mat.userData && mat.userData.statusLight) {
+            statusLightCount++;
+            if (mesh.geometry && !mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+            const bs = mesh.geometry && mesh.geometry.boundingSphere;
+            const scaleMax = Math.max(Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z));
+            const effective = (bs ? bs.radius : 0) * scaleMax;
+            if (effective > 0.6) offenders.push(`${label}:statusLight radius*scale=${effective.toFixed(2)}`);
+            continue;
+          }
+
+          if (mat.isMeshBasicMaterial && !(mat.userData && mat.userData.poster)) {
+            offenders.push(`${label}:MeshBasicMaterial`);
+          }
+          if (mat.isMeshStandardMaterial) {
+            const e = mat.emissive;
+            const maxE = e ? Math.max(e.r, e.g, e.b) : 0;
+            const intensity = mat.emissiveIntensity != null ? mat.emissiveIntensity : 1;
+            const product = intensity * maxE;
+            if (product > 0.6) offenders.push(`${label}:emissive product=${product.toFixed(2)}`);
+          }
+        }
+      });
+
+      assert(statusLightCount >= 1, 'no statusLight materials found');
+      assert(offenders.length === 0, `${offenders.length} offender(s): ${offenders.slice(0, 5).join('; ')}`);
+      return `statusLights=${statusLightCount}`;
+    });
+
+    await check('look:sky', () => {
+      app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+      app.internals.snapCamera();
+      const luma = app.internals.probeSkyLuma();
+      assert(luma >= 150, `sky luma ${luma.toFixed(1)} < 150`);
+      return `luma=${luma.toFixed(1)}`;
+    });
+
+    await check('perf:budget', () => {
+      app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+      app.internals.snapCamera();
+      const stats = app.internals.renderStats();
+      assert(stats.calls <= 400, `draw calls ${stats.calls} > 400`);
+      assert(stats.triangles <= 1500000, `triangles ${stats.triangles} > 1500000`);
+      assert(stats.bodies <= 600, `bodies ${stats.bodies} > 600`);
+      return `calls=${stats.calls} triangles=${stats.triangles} bodies=${stats.bodies}`;
+    });
+
+    await check('assets:slots', () => {
+      const counts = app.internals.assetSlots();
+      const names = ['car', 'roadTiles', 'buildings', 'props', 'poster'];
+      for (const name of names) {
+        assert(counts[name] >= 1, `slot ${name} count ${counts[name]} < 1`);
+      }
+      for (const name of Object.keys(ASSET_SLOTS)) {
+        assert(ASSET_SLOTS[name].url === null, `slot ${name} url is not null`);
+      }
+      return `counts=${JSON.stringify(counts)}`;
+    });
+
+    await check('minimap:toggle', async () => {
+      const el = document.getElementById('minimap');
+      assert(el, '#minimap not found');
+      assert(!el.hidden, 'minimap should start visible (hidden=false)');
+      assert(window.getComputedStyle(el).display !== 'none', 'minimap should start displayed');
+
+      dispatchKey('keydown', 'KeyM');
+      dispatchKey('keyup', 'KeyM');
+      await frames(2);
+      assert(el.hidden, 'KeyM did not hide the minimap');
+
+      dispatchKey('keydown', 'KeyM');
+      dispatchKey('keyup', 'KeyM');
+      await frames(2);
+      assert(!el.hidden, 'KeyM did not show the minimap again');
+
+      ui.open2D();
+      await frames(2);
+      assert(window.getComputedStyle(el).display === 'none', 'minimap should be display:none in 2D view');
+      const hiddenBefore = el.hidden;
+      dispatchKey('keydown', 'KeyM');
+      dispatchKey('keyup', 'KeyM');
+      await frames(2);
+      assert(el.hidden === hiddenBefore, 'KeyM in 2D changed hidden');
+
+      ui.close2D();
+      await frames(2);
+      assert(!el.hidden, 'minimap should be visible again after close2D');
+      assert(window.getComputedStyle(el).display !== 'none', 'minimap should be displayed again after close2D');
+    });
+
+    await check('minimap:car', async () => {
+      const el = document.getElementById('minimap');
+      try {
+        function expectAt(pos, headingTarget, label) {
+          const cssW = el.clientWidth;
+          const cssH = el.clientHeight;
+          const expX = ((pos.x - WORLD_BOUNDS.minX) / (WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX)) * cssW;
+          const expY = ((pos.z - WORLD_BOUNDS.minZ) / (WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ)) * cssH;
+          const carX = parseFloat(el.dataset.carX);
+          const carY = parseFloat(el.dataset.carY);
+          assert(Math.abs(carX - expX) <= 1.5, `${label}: carX ${carX} vs expected ${expX.toFixed(1)}`);
+          assert(Math.abs(carY - expY) <= 1.5, `${label}: carY ${carY} vs expected ${expY.toFixed(1)}`);
+          const heading = parseFloat(el.dataset.heading);
+          const diff = Math.min(Math.abs(heading - headingTarget), 360 - Math.abs(heading - headingTarget));
+          assert(diff <= 5, `${label}: heading ${heading} not within 5 deg of ${headingTarget}`);
+          return { expX, expY, heading };
+        }
+
+        const careerPos = app.internals.padPosition('career');
+        app.internals.placeCarAt(careerPos.x, careerPos.z, -1, 0);
+        await frames(3);
+        const career = expectAt(careerPos, 270, 'career');
+
+        const echoPos = app.internals.padPosition('echonomics');
+        app.internals.placeCarAt(echoPos.x, echoPos.z, 1, 0);
+        await frames(3);
+        const echo = expectAt(echoPos, 90, 'echonomics');
+
+        return `career=(${career.expX.toFixed(1)},${career.expY.toFixed(1)},${career.heading.toFixed(1)}) echo=(${echo.expX.toFixed(1)},${echo.expY.toFixed(1)},${echo.heading.toFixed(1)})`;
+      } finally {
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
+    });
+
+    await check('minimap:layout', () => {
+      const el = document.getElementById('minimap');
+      const r = el.getBoundingClientRect();
+      assert(
+        r.left >= -1 && r.top >= -1 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1,
+        `minimap rect outside viewport: left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} right=${r.right.toFixed(1)} bottom=${r.bottom.toFixed(1)}`
+      );
+
+      function overlaps(a, b) {
+        const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        return ox > 1 && oy > 1;
+      }
+
+      const skip = document.getElementById('skip-2d');
+      if (skip) assert(!overlaps(r, skip.getBoundingClientRect()), 'minimap overlaps #skip-2d');
+
+      const hint = document.getElementById('hint');
+      if (hint && !hint.hidden) assert(!overlaps(r, hint.getBoundingClientRect()), 'minimap overlaps #hint');
+
+      const prompt = document.getElementById('prompt');
+      if (prompt && !prompt.hidden) assert(!overlaps(r, prompt.getBoundingClientRect()), 'minimap overlaps #prompt');
+
+      if (document.body.classList.contains('touch')) {
+        for (const id of ['tc-left', 'tc-right', 'tc-rev', 'tc-gas']) {
+          const tcEl = document.getElementById(id);
+          if (tcEl) assert(!overlaps(r, tcEl.getBoundingClientRect()), `minimap overlaps #${id}`);
+        }
+      }
+
+      return `left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} width=${r.width.toFixed(1)} height=${r.height.toFixed(1)}`;
+    });
+
     app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
     ui.closePanel();
     app.internals.renderOnce();
@@ -776,6 +1021,12 @@ export async function runSelfTest({ api, app, ui }) {
       const articles = document.querySelectorAll('#view-2d article[data-station]');
       assert(articles.length === 11, `article count ${articles.length}`);
     });
+
+    await check('minimap:hidden2d', () => {
+      const el = document.getElementById('minimap');
+      assert(el, '#minimap not found');
+      assert(el.hidden === true, `#minimap hidden was ${el.hidden}`);
+    });
   }
 
   // ---- Always last -----------------------------------------------------
@@ -789,7 +1040,8 @@ export async function runSelfTest({ api, app, ui }) {
   const pixelRatio = mode === '3d' && app ? app.internals.pixelRatio() : null;
   const quality = mode === '3d' && app ? app.quality() : null;
   const viewport = { width: window.innerWidth, height: window.innerHeight };
-  const result = { pass, mode, pixelRatio, quality, viewport, checks };
+  const resources = performance.getEntriesByType('resource').map((e) => e.name);
+  const result = { pass, mode, pixelRatio, quality, viewport, checks, resources };
 
   const pre = document.createElement('pre');
   pre.id = 'selftest-result';

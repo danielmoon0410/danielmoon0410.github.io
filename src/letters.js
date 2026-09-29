@@ -94,7 +94,7 @@ export function buildLetters({ scene, world, palette }) {
       return g;
     });
     const merged = geometries.length > 0 ? mergeGeometries(geometries) : new THREE.BufferGeometry();
-    const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ color: palette.text, emissive: palette.cyan, emissiveIntensity: 0.35 }));
+    const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ color: palette.w.ink, roughness: 0.5 }));
     mesh.castShadow = true;
     mesh.position.copy(body.position);
     scene.add(mesh);
