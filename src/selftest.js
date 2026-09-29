@@ -2,8 +2,9 @@
 // itself (a failing check is reported in the result JSON, not as an error).
 import { STATIONS, SECTIONS, CAREER, CV, FACTS } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
-import { SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS } from './config.js';
+import { SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS, MINIMAP, QUALITY, MAX_PIXEL_RATIO } from './config.js';
 import { nearestRoadPoint } from './world.js';
+import { renderPixelRatio } from './quality.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assertion failed');
@@ -754,6 +755,14 @@ export async function runSelfTest({ api, app, ui }) {
     await check('pixelRatio', () => {
       const pr = app.internals.pixelRatio();
       assert(pr <= 2, `pixelRatio ${pr} > 2`);
+
+      const info = app.internals.renderInfo();
+      const level = QUALITY.levels.find((l) => l.name === info.level);
+      assert(level, `unknown quality level ${info.level}`);
+      const expected = renderPixelRatio(info.cssWidth, info.cssHeight, info.dpr, level.pixels, MAX_PIXEL_RATIO);
+      assert(Math.abs(pr - expected) < 1e-9, `pixelRatio ${pr} !== ${expected} expected for level ${info.level} (css ${info.cssWidth}x${info.cssHeight}, dpr ${info.dpr})`);
+      const highPr = renderPixelRatio(info.cssWidth, info.cssHeight, info.dpr, QUALITY.levels[0].pixels, MAX_PIXEL_RATIO);
+      return `pr=${pr.toFixed(3)} level=${info.level} dpr=${info.dpr} css=${info.cssWidth}x${info.cssHeight} buffer=${info.bufferWidth}x${info.bufferHeight} highPr=${highPr.toFixed(3)} aa=${info.aa ? 1 : 0}`;
     });
 
     await check('world:bounds', () => {
@@ -1001,6 +1010,71 @@ export async function runSelfTest({ api, app, ui }) {
       return `left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} width=${r.width.toFixed(1)} height=${r.height.toFixed(1)}`;
     });
 
+    await check('minimap:labels', async () => {
+      const el = document.getElementById('minimap');
+      try {
+        // Independent of minimap.js: strict box overlap (touching edges do not count) and the dot squares from the pads.
+        function intersect(a, b) {
+          return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        }
+
+        function verify() {
+          const L = app.internals.minimapLabels();
+          assert(L, 'minimapLabels() returned null');
+          assert(Math.abs(L.cssW - el.clientWidth) <= 0.5, `layout width ${L.cssW} vs clientWidth ${el.clientWidth}`);
+          assert(Math.abs(L.cssH - el.clientHeight) <= 0.5, `layout height ${L.cssH} vs clientHeight ${el.clientHeight}`);
+          assert(L.placed.length >= 1, 'no label placed');
+
+          for (const b of L.placed) {
+            assert(
+              b.left >= -0.01 && b.top >= -0.01 && b.right <= L.cssW + 0.01 && b.bottom <= L.cssH + 0.01,
+              `label "${b.text}" outside the map: left=${b.left.toFixed(2)} top=${b.top.toFixed(2)} right=${b.right.toFixed(2)} bottom=${b.bottom.toFixed(2)} in ${L.cssW}x${L.cssH}`
+            );
+          }
+
+          for (let i = 0; i < L.placed.length; i++) {
+            for (let j = i + 1; j < L.placed.length; j++) {
+              assert(!intersect(L.placed[i], L.placed[j]), `labels "${L.placed[i].text}" and "${L.placed[j].text}" intersect`);
+            }
+          }
+
+          for (const station of STATIONS) {
+            const pad = app.internals.padPosition(station.id);
+            assert(pad, `no pad position for ${station.id}`);
+            const x = ((pad.x - WORLD_BOUNDS.minX) / (WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX)) * L.cssW;
+            const y = ((pad.z - WORLD_BOUNDS.minZ) / (WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ)) * L.cssH;
+            const dot = { left: x - MINIMAP.dotClearPx, right: x + MINIMAP.dotClearPx, top: y - MINIMAP.dotClearPx, bottom: y + MINIMAP.dotClearPx };
+            for (const b of L.placed) {
+              assert(!intersect(b, dot), `label "${b.text}" covers the ${station.id} dot`);
+            }
+          }
+
+          if (L.cssW >= MINIMAP.smallBelowPx) {
+            assert(L.placed.length === L.labelCount && L.omitted.length === 0, `${L.placed.length}/${L.labelCount} labels placed, omitted: ${L.omitted.join(',')}`);
+          } else {
+            assert(L.placed.length >= 4, `only ${L.placed.length}/${L.labelCount} labels placed at ${L.cssW}x${L.cssH}`);
+          }
+          return L;
+        }
+
+        const spawn = verify();
+
+        for (const id of ['career', 'echonomics']) {
+          const pad = app.internals.padPosition(id);
+          app.internals.placeCarAt(pad.x, pad.z, 1, 0);
+          await frames(3);
+          const L = verify();
+          const text = STATIONS.find((s) => s.id === id).sign[0];
+          assert(L.placed.some((b) => b.text === text), `label "${text}" not shown at its station`);
+        }
+
+        return `placed=${spawn.placed.length}/${spawn.labelCount} mode=${spawn.mode}${spawn.omitted.length ? ` omitted=${spawn.omitted.join(',')}` : ''}`;
+      } finally {
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
+    });
+
     app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
     ui.closePanel();
     app.internals.renderOnce();
@@ -1041,7 +1115,8 @@ export async function runSelfTest({ api, app, ui }) {
   const quality = mode === '3d' && app ? app.quality() : null;
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const resources = performance.getEntriesByType('resource').map((e) => e.name);
-  const result = { pass, mode, pixelRatio, quality, viewport, checks, resources };
+  const frameStats = mode === '3d' && app ? app.internals.frameStats() : null;
+  const result = { pass, mode, pixelRatio, quality, viewport, checks, resources, frames: frameStats, visibility: document.visibilityState };
 
   const pre = document.createElement('pre');
   pre.id = 'selftest-result';

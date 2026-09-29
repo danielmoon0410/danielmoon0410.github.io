@@ -19,11 +19,13 @@ import {
   SCENERY,
   CAMERA,
   RENDER,
+  QUALITY,
   SEED,
   CAMPUS,
   PAD_RADIUS,
 } from './config.js';
 import { buildSlot } from './assets.js';
+import { renderPixelRatio } from './quality.js';
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -184,32 +186,61 @@ function buildSkyTexture(palette) {
   return texture;
 }
 
+// The renderer's current pixel ratio (drawing-buffer px per css px). The AO and
+// bloom pass subclasses read it to size their buffers from css pixels.
+let renderRatio = 1;
+
 export function createRenderer(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
-  renderer.setPixelRatio(pixelRatio);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDER.exposure;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  const width = canvas.clientWidth || window.innerWidth || 1;
-  const height = canvas.clientHeight || window.innerHeight || 1;
-  renderer.setSize(width, height, false);
+  let cssW = canvas.clientWidth || window.innerWidth || 1;
+  let cssH = canvas.clientHeight || window.innerHeight || 1;
+  let budget = QUALITY.levels[0].pixels;
 
   // RenderPass needs the real scene and camera, which do not exist until
   // createScene() runs afterwards in the same 'renderer' build step, so the
   // composer starts empty; app3d.js finishes wiring it via wirePost().
   const composer = new EffectComposer(renderer);
-  composer.setPixelRatio(pixelRatio);
-  composer.setSize(width, height);
+
+  // Sizes the drawing buffer and the post targets: css size x a ratio that keeps the pixel count under the level's budget.
+  function apply() {
+    renderRatio = renderPixelRatio(cssW, cssH, window.devicePixelRatio || 1, budget, MAX_PIXEL_RATIO);
+    renderer.setPixelRatio(renderRatio);
+    renderer.setSize(cssW, cssH, false);
+    composer.setPixelRatio(renderRatio);
+    composer.setSize(cssW, cssH);
+  }
+  apply();
 
   function resize(w, h) {
-    renderer.setSize(w, h, false);
-    composer.setSize(w, h);
+    cssW = w;
+    cssH = h;
+    apply();
   }
 
-  return { renderer, composer, resize };
+  function setPixelBudget(pixels) {
+    if (pixels === budget) return;
+    budget = pixels;
+    apply();
+  }
+
+  function info() {
+    return {
+      pixelRatio: renderRatio,
+      cssWidth: cssW,
+      cssHeight: cssH,
+      bufferWidth: canvas.width,
+      bufferHeight: canvas.height,
+      dpr: window.devicePixelRatio || 1,
+      budget,
+    };
+  }
+
+  return { renderer, composer, resize, setPixelBudget, info };
 }
 
 export function createScene(palette, renderer) {
@@ -249,7 +280,7 @@ export function createScene(palette, renderer) {
 }
 
 // Hides label sprites from GTAO's normal/depth pre-pass so they don't cast
-// fake AO, and renders the AO buffer at a fraction of the screen resolution.
+// fake AO, and renders the AO buffer at a fraction of the css resolution.
 class SceneAOPass extends GTAOPass {
   overrideVisibility() {
     super.overrideVisibility();
@@ -259,8 +290,27 @@ class SceneAOPass extends GTAOPass {
   }
 
   setSize(width, height) {
-    const s = RENDER.ao.resolutionScale;
+    const s = RENDER.ao.resolutionScale / renderRatio;   // AO buffer = resolutionScale x css pixels at any DPR
     super.setSize(Math.max(1, Math.round(width * s)), Math.max(1, Math.round(height * s)));
+  }
+
+  render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    // The normal/depth pre-pass never samples shadows; without this its renderer.render() re-renders the shadow map.
+    const shadowMap = renderer.shadowMap;
+    const autoUpdate = shadowMap.autoUpdate;
+    shadowMap.autoUpdate = false;
+    try {
+      super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+    } finally {
+      shadowMap.autoUpdate = autoUpdate;
+    }
+  }
+}
+
+// Sizes the bloom mip chain from css pixels, so its cost does not grow with the device pixel ratio.
+class SceneBloomPass extends UnrealBloomPass {
+  setSize(width, height) {
+    super.setSize(Math.max(1, Math.round(width / renderRatio)), Math.max(1, Math.round(height / renderRatio)));
   }
 }
 
@@ -274,7 +324,7 @@ export function wirePost(composer, scene, camera) {
   gtaoPass.blendIntensity = RENDER.ao.blend;
   composer.addPass(gtaoPass);
 
-  const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), RENDER.bloom.strength, RENDER.bloom.radius, RENDER.bloom.threshold);
+  const bloomPass = new SceneBloomPass(new THREE.Vector2(1, 1), RENDER.bloom.strength, RENDER.bloom.radius, RENDER.bloom.threshold);
   composer.addPass(bloomPass);
 
   composer.addPass(new OutputPass());

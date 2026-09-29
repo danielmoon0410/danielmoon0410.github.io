@@ -129,6 +129,7 @@ export const RENDER = {
   sky: { width: 1024, height: 512, clouds: 16, sunGlowPx: 90 },
   floorTileMeters: 8,
   maxAnisotropy: 8,
+  aaMaxDpr: 2,   // SMAA runs only when devicePixelRatio is below this
 };
 
 export const QUALITY = {
@@ -137,9 +138,9 @@ export const QUALITY = {
   slowFrameMs: 22,
   strikes: 2,
   levels: [
-    { name: 'high', shadow: 2048, bloom: true, ao: true, aa: true },
-    { name: 'medium', shadow: 1024, bloom: true, ao: false, aa: true },
-    { name: 'low', shadow: 512, bloom: false, ao: false, aa: false },
+    { name: 'high', shadow: 2048, bloom: true, ao: true, aa: true, pixels: 2073600 },      // 1920 x 1080
+    { name: 'medium', shadow: 1024, bloom: true, ao: false, aa: true, pixels: 1440000 },   // 1600 x 900
+    { name: 'low', shadow: 512, bloom: false, ao: false, aa: false, pixels: 921600 },      // 1280 x 720
   ],
 };
 
@@ -202,7 +203,7 @@ export const POSTER = {
   wall: { x: 0, z: -600, w: 160, h: 42, d: 4 },
 };
 
-export const MINIMAP = { carPx: 9, carPxSmall: 7, labelPx: 11, labelPxSmall: 9, smallBelowPx: 140 };
+export const MINIMAP = { carPx: 9, carPxSmall: 7, labelPx: 11, labelPxSmall: 9, smallBelowPx: 140, dotPx: 2.5, dotClearPx: 3.5, labelGapPx: 4 };
 
 // Single swap point for later CC0 assets (see assets.js). null = procedural build.
 export const ASSET_SLOTS = {

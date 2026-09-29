@@ -1,14 +1,18 @@
 // Fixed top-left minimap: a static layer (roads, poster wall, pads, labels)
-// redrawn only on resize, and the car re-drawn every update(). 2D canvas
+// redrawn on resize (and, when the labels cannot all fit, when another station
+// becomes the nearest one), and the car re-drawn every update(). 2D canvas
 // only -- no three.js here.
 import { WORLD_BOUNDS, ROAD_WIDTH, ROADS, PADS, MINIMAP, POSTER } from './config.js';
 import { STATIONS } from './content.js';
 import { getView } from './ui.js';
 
+// Touching edges do not overlap.
+function boxesOverlap(a, b) { return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom; }
+
 export function createMinimap() {
   const canvas = document.getElementById('minimap');
   if (!canvas) {
-    return { enable() {}, update() {}, resize() {} };
+    return { enable() {}, update() {}, resize() {}, labelLayout() { return null; } };
   }
 
   const styles = getComputedStyle(document.documentElement);
@@ -53,21 +57,110 @@ export function createMinimap() {
     };
   }
 
-  // Distinct station labels, in STATIONS order, each drawn once at the
-  // first station that has it.
-  const labels = (() => {
-    const seen = new Set();
-    const out = [];
+  // Distinct station labels, in STATIONS order. A label keeps every pad of the
+  // stations that share its text (GitHub District has four).
+  const stationOrder = (() => {
+    const byText = new Map();
     for (const station of STATIONS) {
       const text = station.sign[0];
-      if (seen.has(text)) continue;
-      seen.add(text);
       const pos = PADS[station.id];
       if (!pos) continue;
-      out.push({ text, x: pos.x, z: pos.z });
+      if (!byText.has(text)) byText.set(text, { text, pads: [] });
+      byText.get(text).pads.push({ x: pos.x, z: pos.z });
     }
-    return out;
+    return Array.from(byText.values());
   })();
+  const labelCount = stationOrder.length;
+
+  // 'static': one fixed layout fits every label. 'nearest': not all fit, so the
+  // label nearest the car is placed first and the layout follows the car.
+  let mode = 'static';
+  let firstLabel = stationOrder[0];
+  let placed = [];
+  let omitted = [];
+  const carWorld = { x: 0, z: 0, known: false };
+
+  function labelFontPx() {
+    return cssW < MINIMAP.smallBelowPx ? MINIMAP.labelPxSmall : MINIMAP.labelPx;
+  }
+
+  // The label whose nearest pad is nearest the car in world x/z; ties go to the earlier label.
+  function nearestLabel(x, z) {
+    let best = stationOrder[0];
+    let bestDist = Infinity;
+    for (const label of stationOrder) {
+      for (const pad of label.pads) {
+        const d = Math.hypot(x - pad.x, z - pad.z);
+        if (d < bestDist) {
+          bestDist = d;
+          best = label;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Places each label of `order` (highest priority first) at the first of eight
+  // spots around its pads that covers no pad dot and no already placed label.
+  // A label with no free spot is omitted.
+  function layoutLabels(order) {
+    const fontPx = labelFontPx();
+    staticCtx.font = `bold ${fontPx}px ${fontFamily}`;
+    const g = MINIMAP.labelGapPx;
+    const clear = MINIMAP.dotClearPx;
+    const dots = Object.keys(PADS).map((id) => {
+      const p = mapPoint(PADS[id].x, PADS[id].z);
+      return { left: p.x - clear, right: p.x + clear, top: p.y - clear, bottom: p.y + clear };
+    });
+
+    const result = { placed: [], omitted: [] };
+    for (const label of order) {
+      const w = Math.ceil(staticCtx.measureText(label.text).width) + 4;
+      const h = fontPx + 4;
+      if (w > cssW || h > cssH) {
+        result.omitted.push(label.text);
+        continue;
+      }
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const pad of label.pads) {
+        const p = mapPoint(pad.x, pad.z);
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+
+      const spots = [
+        [cx - w / 2, minY - g - h],      // above
+        [cx - w / 2, maxY + g],          // below
+        [maxX + g, cy - h / 2],          // right
+        [minX - g - w, cy - h / 2],      // left
+        [maxX + g, minY - g - h],        // above-right
+        [minX - g - w, minY - g - h],    // above-left
+        [maxX + g, maxY + g],            // below-right
+        [minX - g - w, maxY + g],        // below-left
+      ];
+      let box = null;
+      for (const [sx, sy] of spots) {
+        const left = Math.min(Math.max(sx, 0), cssW - w);
+        const top = Math.min(Math.max(sy, 0), cssH - h);
+        const candidate = { text: label.text, left, top, right: left + w, bottom: top + h };
+        if (dots.some((d) => boxesOverlap(candidate, d))) continue;
+        if (result.placed.some((b) => boxesOverlap(candidate, b))) continue;
+        box = candidate;
+        break;
+      }
+      if (box) result.placed.push(box);
+      else result.omitted.push(label.text);
+    }
+    return result;
+  }
 
   function drawStaticLayer() {
     staticCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -104,27 +197,33 @@ export function createMinimap() {
     for (const id of Object.keys(PADS)) {
       const p = mapPoint(PADS[id].x, PADS[id].z);
       staticCtx.beginPath();
-      staticCtx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      staticCtx.arc(p.x, p.y, MINIMAP.dotPx, 0, Math.PI * 2);
       staticCtx.fill();
     }
 
-    const fontPx = cssW < MINIMAP.smallBelowPx ? MINIMAP.labelPxSmall : MINIMAP.labelPx;
-    staticCtx.font = `bold ${fontPx}px ${fontFamily}`;
+    let layout = layoutLabels(stationOrder);
+    if (layout.omitted.length === 0) {
+      mode = 'static';
+      firstLabel = stationOrder[0];
+    } else {
+      mode = 'nearest';
+      firstLabel = carWorld.known ? nearestLabel(carWorld.x, carWorld.z) : stationOrder[0];
+      layout = layoutLabels([firstLabel, ...stationOrder.filter((label) => label !== firstLabel)]);
+    }
+    placed = layout.placed;
+    omitted = layout.omitted;
+    canvas.dataset.labels = `${placed.length}/${labelCount}`;
+
+    staticCtx.font = `bold ${labelFontPx()}px ${fontFamily}`;
+    staticCtx.textAlign = 'left';
     staticCtx.textBaseline = 'middle';
     staticCtx.lineWidth = 3;
-    for (const label of labels) {
-      const p = mapPoint(label.x, label.z);
-      const w = staticCtx.measureText(label.text).width;
-      let lx = p.x + 5;
-      staticCtx.textAlign = 'left';
-      if (lx + w > cssW) {
-        lx = p.x - 5;
-        staticCtx.textAlign = 'right';
-      }
+    for (const box of placed) {
+      const cy = box.top + (box.bottom - box.top) / 2;
       staticCtx.strokeStyle = colors.bg;
-      staticCtx.strokeText(label.text, lx, p.y);
+      staticCtx.strokeText(box.text, box.left + 2, cy);
       staticCtx.fillStyle = colors.text;
-      staticCtx.fillText(label.text, lx, p.y);
+      staticCtx.fillText(box.text, box.left + 2, cy);
     }
   }
 
@@ -164,6 +263,11 @@ export function createMinimap() {
   function update(pos, fwd) {
     if (canvas.hidden) return;
 
+    carWorld.x = pos.x;
+    carWorld.z = pos.z;
+    carWorld.known = true;
+    if (mode === 'nearest' && nearestLabel(pos.x, pos.z) !== firstLabel) drawStaticLayer();
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(staticCanvas, 0, 0);
@@ -199,5 +303,16 @@ export function createMinimap() {
     canvas.dataset.heading = (((Math.atan2(fwd.x, -fwd.z) * 180) / Math.PI + 360) % 360).toFixed(1);
   }
 
-  return { enable, update, resize };
+  function labelLayout() {
+    return {
+      cssW,
+      cssH,
+      mode,
+      labelCount,
+      placed: placed.map((box) => ({ ...box })),
+      omitted: omitted.slice(),
+    };
+  }
+
+  return { enable, update, resize, labelLayout };
 }

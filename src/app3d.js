@@ -12,10 +12,11 @@ import { createInput } from './input.js';
 import { getView, setPromptStation, getOpenPanelId, closePanel } from './ui.js';
 import { createMinimap } from './minimap.js';
 import { SLOT_NAMES } from './assets.js';
+import { createQualityMeter } from './quality.js';
 
 export async function buildApp({ canvas, touch, onStep }) {
   const palette = readPalette();
-  const { renderer, composer, resize } = createRenderer(canvas);
+  const { renderer, composer, resize, setPixelBudget, info: rendererInfo } = createRenderer(canvas);
   const { scene, camera, sun } = createScene(palette, renderer);
   const { gtaoPass, bloomPass, smaaPass } = wirePost(composer, scene, camera);
   const { world } = createPhysics();
@@ -85,53 +86,28 @@ export async function buildApp({ canvas, touch, onStep }) {
   await onStep('compile');
 
   // --- Quality manager ---------------------------------------------------
-  let qualityIndex = 0;
-  let strikeCount = 0;
-  let warmupUntilTime = 0;
-  let windowStartTime = 0;
-  let windowSum = 0;
-  let windowCount = 0;
+  const meter = createQualityMeter({
+    warmupMs: QUALITY.warmupMs,
+    windowMs: QUALITY.windowMs,
+    slowFrameMs: QUALITY.slowFrameMs,
+    strikes: QUALITY.strikes,
+    levelCount: QUALITY.levels.length,
+  });
+
+  function applyAA() {
+    smaaPass.enabled = QUALITY.levels[meter.index()].aa && (window.devicePixelRatio || 1) < RENDER.aaMaxDpr;
+  }
 
   function applyQualityLevel(index) {
     const level = QUALITY.levels[index];
     setShadowSize(sun, level.shadow);
+    setPixelBudget(level.pixels);
     gtaoPass.enabled = level.ao;
     bloomPass.enabled = level.bloom;
-    smaaPass.enabled = level.aa;
+    applyAA();
     document.body.dataset.quality = level.name;
   }
   applyQualityLevel(0);
-
-  function resetQualityWindow(now) {
-    warmupUntilTime = now + QUALITY.warmupMs;
-    windowStartTime = 0;
-    windowSum = 0;
-    windowCount = 0;
-  }
-
-  function sampleQuality(now, rawDeltaMs) {
-    if (now < warmupUntilTime) return;
-    if (rawDeltaMs > 250) return;
-    if (windowStartTime === 0) windowStartTime = now;
-    windowSum += rawDeltaMs;
-    windowCount += 1;
-    if (now - windowStartTime >= QUALITY.windowMs) {
-      const mean = windowSum / windowCount;
-      if (mean > QUALITY.slowFrameMs) {
-        strikeCount += 1;
-        if (strikeCount >= QUALITY.strikes && qualityIndex < QUALITY.levels.length - 1) {
-          qualityIndex += 1;
-          applyQualityLevel(qualityIndex);
-          strikeCount = 0;
-        }
-      } else {
-        strikeCount = 0;
-      }
-      windowStartTime = now;
-      windowSum = 0;
-      windowCount = 0;
-    }
-  }
 
   // --- Loop ---------------------------------------------------------------
   // requestAnimationFrame is throttled or never fires on a hidden or
@@ -161,6 +137,8 @@ export async function buildApp({ canvas, touch, onStep }) {
   let running = false;
   let renderEnabled = true;
   let renderCount = 0;
+  const frameStatsOn = { frames: 0, sumMs: 0 };    // frame() count and summed raw frame time while renderEnabled; never reset
+  const frameStatsOff = { frames: 0, sumMs: 0 };   // the same while render is off (the drive checks)
   let frameHandle = null;
   let lastTime = 0;
   let prevPadId = null;
@@ -200,7 +178,10 @@ export async function buildApp({ canvas, touch, onStep }) {
     updateSun();
     minimap.update(vehicle.position(), vehicle.forward());
 
-    sampleQuality(lastTime, rawDeltaMs);
+    if (meter.sample(lastTime, rawDeltaMs, document.visibilityState !== 'hidden')) applyQualityLevel(meter.index());
+    const bucket = renderEnabled ? frameStatsOn : frameStatsOff;
+    bucket.frames += 1;
+    bucket.sumMs += rawDeltaMs;
 
     if (renderEnabled) { composer.render(); renderCount += 1; }
 
@@ -211,7 +192,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     if (running) return;
     running = true;
     lastTime = performance.now();
-    resetQualityWindow(lastTime);
+    meter.reset(lastTime);
     minimap.enable();
     frameHandle = scheduleFrame(frame);
   }
@@ -227,7 +208,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     if (running) return;
     running = true;
     lastTime = performance.now();
-    resetQualityWindow(lastTime);
+    meter.reset(lastTime);
     frameHandle = scheduleFrame(frame);
   }
 
@@ -235,6 +216,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     const width = canvas.clientWidth || window.innerWidth || 1;
     const height = canvas.clientHeight || window.innerHeight || 1;
     resize(width, height);
+    applyAA();   // devicePixelRatio can change when the window moves to another screen
     const aspect = width / height;
     camera.aspect = aspect;
     camera.fov = aspect < 1 ? CAMERA.fovPortrait : CAMERA.fov;
@@ -243,12 +225,19 @@ export async function buildApp({ canvas, touch, onStep }) {
   }
   window.addEventListener('resize', handleResize);
 
+  // A hidden tab throttles frames to >= 1 s: they must not count as slow. Restart the warm-up on return.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' || !running) return;
+    lastTime = performance.now();
+    meter.reset(lastTime);
+  });
+
   function carPosition() {
     return vehicle.position();
   }
 
   function quality() {
-    return QUALITY.levels[qualityIndex].name;
+    return QUALITY.levels[meter.index()].name;
   }
 
   const internals = {
@@ -320,6 +309,12 @@ export async function buildApp({ canvas, touch, onStep }) {
       renderer.info.autoReset = true;
       return { calls, triangles, bodies };
     },
+    renderInfo: () => ({ ...rendererInfo(), aa: smaaPass.enabled, level: QUALITY.levels[meter.index()].name }),
+    frameStats: () => ({
+      on: { frames: frameStatsOn.frames, meanMs: frameStatsOn.frames ? frameStatsOn.sumMs / frameStatsOn.frames : 0 },
+      off: { frames: frameStatsOff.frames, meanMs: frameStatsOff.frames ? frameStatsOff.sumMs / frameStatsOff.frames : 0 },
+    }),
+    minimapLabels: () => minimap.labelLayout(),
   };
 
   return { start, pause, resume, carPosition, quality, internals };
