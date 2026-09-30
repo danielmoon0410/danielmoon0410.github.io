@@ -1,15 +1,17 @@
-// Bright HQ-style campus: office/tower/pavilion/canopy buildings, trees,
-// lamps, the pool and the hackathon poster wall. Buildings and props are
-// swappable through assets.js; their physics colliders always come from
-// CAMPUS config data, never from the visuals, so a later model swap cannot
-// change the physics.
+// Bright HQ-style campus: office/tower/pavilion/canopy buildings, the
+// landscape (landscape.js: trees, flower beds, ponds, bridges), lamps, the
+// pool and the hackathon poster wall. Buildings and props are swappable
+// through assets.js; their physics colliders always come from CAMPUS config
+// data, never from the visuals, so a later model swap cannot change the
+// physics.
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { CAMPUS, POSTER, SEED, ROAD_WIDTH, ROADS, PADS, SCENERY_ZONES } from './config.js';
-import { segmentAABB, circleOverlapsAABB, statusLightMaterial, mulberry32 } from './world.js';
+import { CAMPUS, POSTER, SEED } from './config.js';
+import { statusLightMaterial, mulberry32 } from './world.js';
 import { buildSlot, applyPosterSlot } from './assets.js';
 import { drawPoster } from './poster.js';
+import { buildLandscape } from './landscape.js';
 
 // ---- Facade texture (shared by campus buildings and stations.js repos) ----
 let sharedFacadeMaterial = null;
@@ -242,83 +244,7 @@ function buildBuildingsGroup({ world, palette, rng, maxAnisotropy }) {
   return group;
 }
 
-// ---- Props: trees, lamps, pool -------------------------------------------
-
-function pickWeightedLawn(rng, lawnAreas, totalArea) {
-  let t = rng() * totalArea;
-  for (let i = 0; i < CAMPUS.lawns.length; i++) {
-    t -= lawnAreas[i];
-    if (t <= 0) return CAMPUS.lawns[i];
-  }
-  return CAMPUS.lawns[CAMPUS.lawns.length - 1];
-}
-
-function buildTrees(group, world, palette, rng) {
-  const roadAABBs = ROADS.map(([x1, z1, x2, z2]) => segmentAABB(x1, z1, x2, z2, ROAD_WIDTH / 2 + 2));
-  const pads = Object.values(PADS);
-  const pool = CAMPUS.pool;
-  const poolBox = { minX: pool.x - pool.w / 2 - 2, maxX: pool.x + pool.w / 2 + 2, minZ: pool.z - pool.d / 2 - 2, maxZ: pool.z + pool.d / 2 + 2 };
-  const lawnAreas = CAMPUS.lawns.map((r) => (r.maxX - r.minX) * (r.maxZ - r.minZ));
-  const totalArea = lawnAreas.reduce((a, v) => a + v, 0);
-
-  const placed = [];
-  const maxAttempts = CAMPUS.trees.count * 30;
-  let attempts = 0;
-  while (placed.length < CAMPUS.trees.count && attempts < maxAttempts) {
-    attempts++;
-    const lawn = pickWeightedLawn(rng, lawnAreas, totalArea);
-    const x = lawn.minX + rng() * (lawn.maxX - lawn.minX);
-    const z = lawn.minZ + rng() * (lawn.maxZ - lawn.minZ);
-
-    if (CAMPUS.buildings.some((b) => x >= b.x - b.w / 2 - 3 && x <= b.x + b.w / 2 + 3 && z >= b.z - b.d / 2 - 3 && z <= b.z + b.d / 2 + 3)) continue;
-    if (roadAABBs.some((r) => circleOverlapsAABB(x, z, 0, r))) continue;
-    if (pads.some((p) => Math.hypot(x - p.x, z - p.z) < 10)) continue;
-    if (SCENERY_ZONES.some((zn) => x >= zn.minX - 2 && x <= zn.maxX + 2 && z >= zn.minZ - 2 && z <= zn.maxZ + 2)) continue;
-    if (circleOverlapsAABB(x, z, 0, poolBox)) continue;
-    if (placed.some((t) => Math.hypot(x - t.x, z - t.z) < CAMPUS.trees.minSpacing)) continue;
-
-    placed.push({ x, z });
-  }
-
-  if (placed.length === 0) return;
-
-  const trunkGeom = new THREE.CylinderGeometry(0.2, 0.28, 2.4, 8);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: palette.w.trunk });
-  const trunkMesh = new THREE.InstancedMesh(trunkGeom, trunkMat, placed.length);
-  trunkMesh.castShadow = true;
-
-  const leafGeom = new THREE.IcosahedronGeometry(1.7, 1);
-  const leafMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(1, 1, 1), flatShading: true });
-  const leafMesh = new THREE.InstancedMesh(leafGeom, leafMat, placed.length);
-  leafMesh.castShadow = true;
-
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const leafColor = new THREE.Color();
-  placed.forEach((t, i) => {
-    m.makeTranslation(t.x, 1.2, t.z);
-    trunkMesh.setMatrixAt(i, m);
-
-    const s = 0.8 + rng() * 0.5;
-    m.compose(new THREE.Vector3(t.x, 3.4, t.z), q, new THREE.Vector3(s, s, s));
-    leafMesh.setMatrixAt(i, m);
-    leafColor.copy(palette.w.leaf).lerp(palette.w['leaf-2'], rng());
-    leafMesh.setColorAt(i, leafColor);
-
-    const body = new CANNON.Body({ type: CANNON.Body.STATIC });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(0.3, 1.5, 0.3)));
-    body.position.set(t.x, 1.5, t.z);
-    world.addBody(body);
-  });
-  trunkMesh.instanceMatrix.needsUpdate = true;
-  leafMesh.instanceMatrix.needsUpdate = true;
-  if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
-  trunkMesh.computeBoundingSphere();
-  leafMesh.computeBoundingSphere();
-
-  group.add(trunkMesh);
-  group.add(leafMesh);
-}
+// ---- Props: lamps, pool (trees, beds, ponds and bridges: landscape.js) ----
 
 function buildLamps(group, world, palette) {
   const cfg = CAMPUS.lamps;
@@ -394,14 +320,6 @@ function buildPool(group, world, palette) {
   world.addBody(body);
 }
 
-function buildPropsGroup({ world, palette, rng }) {
-  const group = new THREE.Group();
-  buildTrees(group, world, palette, rng);
-  buildLamps(group, world, palette);
-  buildPool(group, world, palette);
-  return group;
-}
-
 // ---- Poster wall -----------------------------------------------------------
 
 function buildPosterWall({ scene, world, palette, maxAnisotropy }) {
@@ -470,10 +388,17 @@ export function buildCampus({ scene, world, palette, rng, maxAnisotropy }) {
   const buildingsGroup = buildSlot('buildings', () => buildBuildingsGroup({ world, palette, rng, maxAnisotropy }));
   scene.add(buildingsGroup);
 
-  const propsGroup = buildSlot('props', () => buildPropsGroup({ world, palette, rng }));
+  let landscape = null;
+  const propsGroup = buildSlot('props', () => {
+    const group = new THREE.Group();
+    landscape = buildLandscape(group, world, palette);
+    buildLamps(group, world, palette);
+    buildPool(group, world, palette);
+    return group;
+  });
   scene.add(propsGroup);
 
   const { posterInfo } = buildPosterWall({ scene, world, palette, maxAnisotropy });
 
-  return { posterInfo };
+  return { posterInfo, landscapeInfo: () => landscape };
 }

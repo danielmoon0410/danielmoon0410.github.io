@@ -1,10 +1,14 @@
 // In-page self-test, run only behind ?selftest=1. Never logs to #error-log
 // itself (a failing check is reported in the result JSON, not as an error).
-import { STATIONS, SECTIONS, CAREER, CV, FACTS } from './content.js';
+import { STATIONS, SECTIONS, CAREER, CV, FACTS, UI_TEXT } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
-import { SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS, MINIMAP, QUALITY, MAX_PIXEL_RATIO } from './config.js';
+import {
+  SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS, MINIMAP, QUALITY, MAX_PIXEL_RATIO,
+  LETTERS, PADS, PAD_RADIUS, ROADS, ROAD_WIDTH, CAMPUS, SCENERY_ZONES, LANDSCAPE, TRAFFIC, MUSIC,
+} from './config.js';
 import { nearestRoadPoint } from './world.js';
 import { renderPixelRatio } from './quality.js';
+import { LOOP_STEPS, loopEvents, readMusicPref, writeMusicPref, createBus, scheduleStep } from './music.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assertion failed');
@@ -69,7 +73,8 @@ function buildFactSpecIndex() {
   return index;
 }
 
-export async function runSelfTest({ api, app, ui }) {
+export async function runSelfTest({ api, app, ui, music }) {
+  const startedAt = performance.now();
   const mode = document.body.dataset.mode;
   const checks = [];
 
@@ -725,14 +730,27 @@ export async function runSelfTest({ api, app, ui }) {
       assert(ui.getOpenPanelId() === null, 'close button did not close the panel');
     });
 
-    await check('reset', async () => {
-      app.internals.placeCarAt(10, 14, 0, -1);
-      dispatchKey('keydown', 'KeyR');
-      dispatchKey('keyup', 'KeyR');
-      await frames(2);
-      const pos = api.carPosition();
-      const np = nearestRoadPoint(pos.x, pos.z);
-      assert(np && np.distance <= 3, `reset landed ${np && np.distance} from the road`);
+    await check('reset:spawn', async () => {
+      try {
+        app.internals.placeCarAt(-135, -300, 0, 1);
+        await frames(2);
+        dispatchKey('keydown', 'KeyR');
+        dispatchKey('keyup', 'KeyR');
+        await frames(2);
+        const pos = api.carPosition();
+        const s = st();
+        const dist = Math.hypot(pos.x - SPAWN.x, pos.z - SPAWN.z);
+        const dot = s.heading.x * SPAWN.dirX + s.heading.z * SPAWN.dirZ;
+        const camDz = app.internals.cameraPosition().z - pos.z;
+        assert(dist <= 0.5, `R left the car ${dist.toFixed(2)} m from the spawn (${pos.x.toFixed(2)}, ${pos.z.toFixed(2)})`);
+        assert(dot >= 0.995, `heading dot spawn direction ${dot.toFixed(4)} < 0.995`);
+        assert(Math.abs(s.speed) <= 0.5, `speed ${s.speed.toFixed(2)} after R`);
+        assert(camDz > 5, `camera only ${camDz.toFixed(2)} m behind the car after R (snapCamera)`);
+        return `dist=${dist.toFixed(3)} dot=${dot.toFixed(4)} speed=${s.speed.toFixed(2)} camDz=${camDz.toFixed(2)}`;
+      } finally {
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
     });
 
     await check('tower:slabs', () => {
@@ -1075,6 +1093,542 @@ export async function runSelfTest({ api, app, ui }) {
       }
     });
 
+    // ---- Run 5a: spawn subtitle, landscape, bridges, traffic lights, music -----------------
+    const toSpawn = async () => {
+      app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+      await frames(3);
+    };
+
+    function boxesOverlap(a, b) {
+      const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+      const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      return ox > 1 && oy > 1;
+    }
+
+    function safeLocal() {
+      try {
+        return window.localStorage;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function readRawPref() {
+      try {
+        return window.localStorage.getItem(MUSIC.storageKey);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function restoreRawPref(raw) {
+      try {
+        if (raw === null) window.localStorage.removeItem(MUSIC.storageKey);
+        else window.localStorage.setItem(MUSIC.storageKey, raw);
+      } catch (err) {
+        // Blocked storage: there is nothing to restore.
+      }
+    }
+
+    const prefAtStart = readRawPref();   // music:toggle changes the stored preference; music:pref puts this back
+
+    await check('subtitle:text', async () => {
+      try {
+        const info = app.internals.subtitleInfo();
+        const expected = displayText({ id: 'P8', upTo: '. ' });
+        assert(typeof expected === 'string' && expected.length > 0, 'the P8 display text is empty');
+        assert(!expected.includes('Spawn subtitle'), `the P8 display text still holds the note: ${expected}`);
+        assert(info.text === expected, `subtitle text "${info.text}" !== "${expected}"`);
+        assert(info.visible === true, 'the subtitle mesh is not visible');
+        assert(info.zMin >= LETTERS.z + LETTERS.depth / 2 - 1e-6, `zMin ${info.zMin.toFixed(3)} is behind the letters' front face`);
+        const ringZ = PADS.about.z - PAD_RADIUS * 1.25 - 0.175;
+        assert(info.zMax <= ringZ + 1e-6, `zMax ${info.zMax.toFixed(3)} reaches the about pad ring (${ringZ.toFixed(3)})`);
+        assert(info.inkWidthRatio >= 0.55 && info.inkWidthRatio <= 0.9, `ink width ratio ${info.inkWidthRatio.toFixed(3)} outside [0.55, 0.9]`);
+        assert(info.inkHeightRatio >= 0.6 && info.inkHeightRatio <= 0.95, `ink height ratio ${info.inkHeightRatio.toFixed(3)} outside [0.6, 0.95]`);
+        assert(Math.abs(info.inkCenterOffset) <= 0.05, `ink centre offset ${info.inkCenterOffset.toFixed(3)} beyond 0.05`);
+
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        app.internals.snapCamera();
+        await frames(2);
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const pts = info.inkCorners.map((c) => app.internals.project(c.x, c.y, c.z));
+        pts.forEach((p, i) => {
+          assert(p.x >= 0 && p.x <= W && p.y >= 0 && p.y <= H && p.z < 1, `ink corner ${i} projects outside the viewport: (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, z ${p.z.toFixed(3)}) in ${W}x${H}`);
+        });
+        const ys = pts.map((p) => p.y);
+        const top = Math.min(...ys);
+        const h = Math.max(...ys) - top;
+        assert(h >= 0.014 * H, `projected ink height ${h.toFixed(1)} px < ${(0.014 * H).toFixed(1)} px (1.4% of ${H})`);
+        const lettersBase = app.internals.project(LETTERS.centerX, 0, LETTERS.z + LETTERS.depth / 2);
+        assert(top >= lettersBase.y - 2, `the ink top (${top.toFixed(1)} px) is above the letters' base (${lettersBase.y.toFixed(1)} px)`);
+        return `text="${info.text}" h=${h.toFixed(1)}px top=${top.toFixed(1)} lettersBase=${lettersBase.y.toFixed(1)} inkW=${info.inkWidthRatio.toFixed(3)} inkH=${info.inkHeightRatio.toFixed(3)} offset=${info.inkCenterOffset.toFixed(4)} z=${info.zMin.toFixed(3)}..${info.zMax.toFixed(3)}`;
+      } finally {
+        await toSpawn();
+      }
+    });
+
+    await check('landscape:counts', () => {
+      const info = app.internals.landscapeInfo();
+      assert(info, 'landscapeInfo() returned nothing');
+      const bySpecies = new Map();
+      for (const t of info.trees) {
+        if (!bySpecies.has(t.species)) bySpecies.set(t.species, []);
+        bySpecies.get(t.species).push(t.scale);
+      }
+      assert(info.trees.length >= 280, `${info.trees.length} trees < 280`);
+      assert(bySpecies.size === 3, `${bySpecies.size} species, expected 3: ${Array.from(bySpecies.keys())}`);
+      const per = [];
+      for (const [name, scales] of bySpecies) {
+        const spread = Math.max(...scales) - Math.min(...scales);
+        assert(scales.length >= 30, `species ${name} has ${scales.length} trees < 30`);
+        assert(spread >= 0.2, `species ${name} scale spread ${spread.toFixed(3)} < 0.2`);
+        per.push(`${name}=${scales.length}(spread ${spread.toFixed(2)})`);
+      }
+      const crownColours = new Set(info.trees.map((t) => t.color)).size;
+      assert(crownColours >= 20, `${crownColours} distinct crown colours < 20`);
+      const bedColours = new Set(info.beds.map((b) => b.color)).size;
+      assert(info.beds.length >= 36, `${info.beds.length} beds < 36`);
+      assert(bedColours >= 4, `${bedColours} distinct bed colours < 4`);
+      assert(info.flowers >= 600, `${info.flowers} flowers < 600`);
+      assert(info.beds.reduce((a, b) => a + b.flowers, 0) === info.flowers, 'the per-bed flower counts do not add up to the total');
+      assert(info.ponds.length === LANDSCAPE.ponds.length && info.bridges.length === LANDSCAPE.ponds.length, `ponds ${info.ponds.length} / bridges ${info.bridges.length} !== ${LANDSCAPE.ponds.length}`);
+      let instanced = 0;
+      let trunkCount = -1;
+      let flowerCount = -1;
+      app.internals.forEachMesh((mesh) => {
+        if (!mesh.isInstancedMesh || !mesh.userData.landscape) return;
+        instanced += 1;
+        if (mesh.userData.landscape === 'trunk') trunkCount = mesh.count;
+        if (mesh.userData.landscape === 'flower') flowerCount = mesh.count;
+      });
+      assert(instanced >= 7, `${instanced} landscape InstancedMeshes < 7`);
+      assert(trunkCount === info.trees.length, `trunk instances ${trunkCount} !== trees ${info.trees.length}`);
+      assert(flowerCount === info.flowers, `flower instances ${flowerCount} !== flowers ${info.flowers}`);
+      return `trees=${info.trees.length} species=${per.join(',')} crownColours=${crownColours} beds=${info.beds.length} bedColours=${bedColours} flowers=${info.flowers} ponds=${info.ponds.length} bridges=${info.bridges.length} instanced=${instanced} trunk=${trunkCount} flowerInstances=${flowerCount}`;
+    });
+
+    await check('landscape:place', () => {
+      const info = app.internals.landscapeInfo();
+      const tc = LANDSCAPE.trees;
+      const bc = LANDSCAPE.beds;
+      const e = 0.01;
+
+      function segDist(x, z, r) {
+        const [x1, z1, x2, z2] = r;
+        const dx = x2 - x1;
+        const dz = z2 - z1;
+        const len2 = dx * dx + dz * dz;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / len2)) : 0;
+        return Math.hypot(x - (x1 + dx * t), z - (z1 + dz * t));
+      }
+
+      // The first rule a point of radius `pad` breaks, or null.
+      function violation(x, z, pad) {
+        if (!CAMPUS.lawns.some((l) => x >= l.minX + pad - e && x <= l.maxX - pad + e && z >= l.minZ + pad - e && z <= l.maxZ - pad + e)) return 'lawn';
+        if (CAMPUS.buildings.some((b) => Math.abs(x - b.x) < b.w / 2 + 3 + pad - e && Math.abs(z - b.z) < b.d / 2 + 3 + pad - e)) return 'building';
+        if (ROADS.some((r) => segDist(x, z, r) < ROAD_WIDTH / 2 + 2 + pad - e)) return 'road';
+        if (Object.values(PADS).some((p) => Math.hypot(x - p.x, z - p.z) < 10 + pad - e)) return 'pad';
+        if (SCENERY_ZONES.some((zn) => x > zn.minX - 2 - pad + e && x < zn.maxX + 2 + pad - e && z > zn.minZ - 2 - pad + e && z < zn.maxZ + 2 + pad - e)) return 'zone';
+        const pool = CAMPUS.pool;
+        if (Math.abs(x - pool.x) < pool.w / 2 + 2 + pad - e && Math.abs(z - pool.z) < pool.d / 2 + 2 + pad - e) return 'pool';
+        if (LANDSCAPE.ponds.some((p) => ((x - p.x) / (p.rx + LANDSCAPE.pondMargin + pad - e)) ** 2 + ((z - p.z) / (p.rz + LANDSCAPE.pondMargin + pad - e)) ** 2 < 1)) return 'pond';
+        if (info.corridors.some((c) => x > c.minX - pad + e && x < c.maxX + pad - e && z > c.minZ - pad + e && z < c.maxZ + pad - e)) return 'corridor';
+        return null;
+      }
+
+      for (const t of info.trees) {
+        const v = violation(t.x, t.z, 0);
+        assert(!v, `tree at (${t.x.toFixed(2)}, ${t.z.toFixed(2)}) breaks the ${v} rule`);
+      }
+      for (const b of info.beds) {
+        const v = violation(b.x, b.z, b.r);
+        assert(!v, `bed at (${b.x.toFixed(2)}, ${b.z.toFixed(2)}) r=${b.r.toFixed(2)} breaks the ${v} rule`);
+      }
+
+      let minTree = Infinity;
+      for (let i = 0; i < info.trees.length; i++) {
+        for (let j = i + 1; j < info.trees.length; j++) {
+          minTree = Math.min(minTree, Math.hypot(info.trees[i].x - info.trees[j].x, info.trees[i].z - info.trees[j].z));
+        }
+      }
+      assert(minTree >= tc.minSpacing - e, `two trees are ${minTree.toFixed(2)} m apart < ${tc.minSpacing}`);
+
+      let minTreeBed = Infinity;
+      for (const t of info.trees) {
+        for (const b of info.beds) minTreeBed = Math.min(minTreeBed, Math.hypot(t.x - b.x, t.z - b.z) - b.r);
+      }
+      assert(minTreeBed >= bc.treeGap - e, `a tree is ${minTreeBed.toFixed(2)} m from a bed's edge < ${bc.treeGap}`);
+
+      let minBedGap = Infinity;
+      for (let i = 0; i < info.beds.length; i++) {
+        for (let j = i + 1; j < info.beds.length; j++) {
+          const a = info.beds[i];
+          const b = info.beds[j];
+          minBedGap = Math.min(minBedGap, Math.hypot(a.x - b.x, a.z - b.z) - a.r - b.r);
+        }
+      }
+      assert(minBedGap >= bc.gap - e, `two beds are ${minBedGap.toFixed(2)} m apart edge to edge < ${bc.gap}`);
+      return `trees=${info.trees.length} beds=${info.beds.length} minTreeSpacing=${minTree.toFixed(2)} minTreeToBed=${minTreeBed.toFixed(2)} minBedGap=${minBedGap.toFixed(2)}`;
+    });
+
+    await check('bridge:drive', async () => {
+      const b = app.internals.landscapeInfo().bridges[0];
+      assert(b, 'no bridge in landscapeInfo()');
+      app.internals.setRender(false);
+      try {
+        app.internals.placeCarAt(b.x, b.zStart + 10, 0, -1);
+        await waitSim(1, 5000);
+        const restY = api.carPosition().y;
+
+        dispatchKey('keydown', 'KeyW');
+        const t0 = performance.now();
+        const s0 = app.internals.simTime();
+        let crossed = false;
+        let maxY = -Infinity;
+        let maxDx = 0;
+        let minY = Infinity;
+        for (;;) {
+          const p = api.carPosition();
+          minY = Math.min(minY, p.y);
+          if (p.z >= b.zEnd && p.z <= b.zStart) {
+            maxY = Math.max(maxY, p.y);
+            maxDx = Math.max(maxDx, Math.abs(p.x - b.x));
+          }
+          if (p.z < b.zEnd - 1) {
+            crossed = true;
+            break;
+          }
+          if (app.internals.simTime() - s0 >= 8) break;
+          if (performance.now() - t0 >= 20000) throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 20000 ms`);
+          await nextTick();
+        }
+        const crossSec = app.internals.simTime() - s0;
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keydown', 'Space');
+        await waitSim(1, 5000);
+
+        assert(crossed, `the car did not get past z ${(b.zEnd - 1).toFixed(1)} in 8 s of physics (z ${api.carPosition().z.toFixed(1)})`);
+        assert(maxY >= restY + 0.3, `max y on the bridge ${maxY.toFixed(2)} < rest ${restY.toFixed(2)} + 0.3`);
+        assert(maxDx <= 1.0, `the car drifted ${maxDx.toFixed(2)} m from the bridge axis`);
+        assert(minY >= 0.4, `min y ${minY.toFixed(2)} < 0.4`);
+        return `crossSec=${crossSec.toFixed(2)} restY=${restY.toFixed(2)} maxY=${maxY.toFixed(2)} minY=${minY.toFixed(2)} maxDx=${maxDx.toFixed(2)} bridgeZ=${b.zStart.toFixed(0)}..${b.zEnd.toFixed(0)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keyup', 'Space');
+        app.internals.setRender(true);
+        await toSpawn();
+      }
+    });
+
+    await check('pond:rim', async () => {
+      const info = app.internals.landscapeInfo();
+      const b = info.bridges[0];
+      const pond = info.ponds[0];
+      app.internals.setRender(false);
+      try {
+        const laneX = b.x + 7;
+        app.internals.placeCarAt(laneX, pond.z + pond.rz + 8, 0, -1);
+        await waitSim(0.5, 5000);
+        dispatchKey('keydown', 'KeyW');
+        const t0 = performance.now();
+        const s0 = app.internals.simTime();
+        let minRadius = Infinity;
+        while (app.internals.simTime() - s0 < 3) {
+          if (performance.now() - t0 >= 15000) throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+          await nextTick();
+          const p = api.carPosition();
+          minRadius = Math.min(minRadius, Math.hypot((p.x - pond.x) / pond.rx, (p.z - pond.z) / pond.rz));
+        }
+        const end = api.carPosition();
+        const speed = st().speed;
+        const rimZ = pond.z + pond.rz * Math.sqrt(1 - ((laneX - pond.x) / pond.rx) ** 2);
+        assert(minRadius > 1, `the car centre entered the pond (normalised radius ${minRadius.toFixed(3)})`);
+        assert(end.z >= rimZ + 1.2 && end.z <= rimZ + 4, `final z ${end.z.toFixed(2)} outside [${(rimZ + 1.2).toFixed(2)}, ${(rimZ + 4).toFixed(2)}] (rim at ${rimZ.toFixed(2)})`);
+        assert(Math.abs(speed) <= 1.5, `speed ${speed.toFixed(2)} still above 1.5 at the rim`);
+        return `lane=${laneX.toFixed(1)} rimZ=${rimZ.toFixed(2)} endZ=${end.z.toFixed(2)} speed=${speed.toFixed(2)} minRadius=${minRadius.toFixed(3)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        app.internals.setRender(true);
+        await toSpawn();
+      }
+    });
+
+    await check('traffic:junctions', () => {
+      const info = app.internals.trafficInfo();
+      assert(info.junctions.length === 3, `${info.junctions.length} junctions, expected 3`);
+      for (const j of info.junctions) {
+        for (const [dx, dz] of [[12, 0], [-12, 0], [0, 12], [0, -12]]) {
+          const np = nearestRoadPoint(j.x + dx, j.z + dz);
+          assert(np && np.distance < 0.01, `${j.id}: the point 12 m out at (${dx}, ${dz}) is ${np && np.distance} from a road`);
+        }
+      }
+      assert(info.poles.length === 12, `${info.poles.length} poles, expected 12`);
+      let minPole = Infinity;
+      for (const p of info.poles) {
+        const np = nearestRoadPoint(p.x, p.z);
+        minPole = Math.min(minPole, np.distance);
+        assert(np.distance >= ROAD_WIDTH / 2 + 1 - 1e-6, `pole at (${p.x}, ${p.z}) is ${np.distance.toFixed(2)} m from a road < ${ROAD_WIDTH / 2 + 1}`);
+      }
+      const heads = { z: info.poles.filter((p) => p.axis === 'z').length, x: info.poles.filter((p) => p.axis === 'x').length };
+      assert(heads.z === 6 && heads.x === 6, `heads per axis z ${heads.z}, x ${heads.x}, expected 6 and 6`);
+      assert(info.crosswalks.length === 12, `${info.crosswalks.length} crosswalks, expected 12`);
+      assert(info.stripes === 84, `${info.stripes} stripes, expected 84`);
+      assert(info.lamps.length === 6 && info.lamps.every((l) => l.count === 6), `lamp groups: ${info.lamps.map((l) => `${l.axis}/${l.color}x${l.count}`)}`);
+      return `junctions=3 poles=12 (z ${heads.z}, x ${heads.x}) minPoleToRoad=${minPole.toFixed(2)} crosswalks=12 stripes=84 lampGroups=${info.lamps.length}x${info.lamps[0].count}`;
+    });
+
+    await check('traffic:cycle', async () => {
+      const { signalStateAt } = await import('./traffic.js');
+      const phases = TRAFFIC.phases;
+      const cycle = phases.reduce((a, p) => a + p.s, 0);
+      const step = 0.05;
+      const n = Math.round((2 * cycle) / step);
+      const runs = [];
+      const seen = { z: new Set(), x: new Set() };
+      for (let i = 0; i < n; i++) {
+        const t = i * step;
+        const s = signalStateAt(t);
+        assert(s.z === 'red' || s.x === 'red', `both axes are non-red at t=${t.toFixed(2)}: z ${s.z}, x ${s.x}`);
+        seen.z.add(s.z);
+        seen.x.add(s.x);
+        const last = runs[runs.length - 1];
+        if (last && last.phase === s.phase) last.count += 1;
+        else runs.push({ phase: s.phase, z: s.z, x: s.x, count: 1 });
+      }
+      assert(runs.length === phases.length * 2, `${runs.length} phase runs over two cycles, expected ${phases.length * 2}`);
+      runs.forEach((r, i) => {
+        assert(r.phase === i % phases.length, `run ${i} is phase ${r.phase}, expected ${i % phases.length}`);
+        const dur = r.count * step;
+        assert(Math.abs(dur - phases[r.phase].s) <= 0.06, `phase ${r.phase} lasted ${dur.toFixed(2)} s, expected ${phases[r.phase].s}`);
+      });
+      for (const axis of ['z', 'x']) {
+        for (const c of ['green', 'yellow', 'red']) assert(seen[axis].has(c), `axis ${axis} never shows ${c}`);
+        runs.forEach((r, i) => {
+          const next = runs[(i + 1) % runs.length];
+          const prev = runs[(i + runs.length - 1) % runs.length];
+          if (r[axis] === 'green' && next[axis] !== 'green') assert(next[axis] === 'yellow', `axis ${axis}: green is followed by ${next[axis]}`);
+          if (r[axis] === 'yellow' && prev[axis] !== 'yellow') assert(prev[axis] === 'green', `axis ${axis}: yellow is preceded by ${prev[axis]}`);
+        });
+      }
+      const edges = [signalStateAt(0).phase, signalStateAt(cycle - 1e-6).phase, signalStateAt(cycle).phase, signalStateAt(-1).phase];
+      assert(JSON.stringify(edges) === JSON.stringify([0, phases.length - 1, 0, phases.length - 1]), `boundary phases ${edges}`);
+
+      try {
+        let start = 0;
+        for (let k = 0; k < phases.length; k++) {
+          app.internals.trafficSetTime(start + 0.3);
+          await frames(2);
+          const s = app.internals.trafficState();
+          assert(s.phase === k, `live phase ${s.phase} !== ${k} at start+0.3`);
+          for (const l of app.internals.trafficInfo().lamps) {
+            const on = s[l.axis] === l.color;
+            assert(l.on === on, `phase ${k}: lamp ${l.axis}/${l.color} on=${l.on}, expected ${on}`);
+            assert(l.intensity === (on ? TRAFFIC.lampOn : 0), `phase ${k}: lamp ${l.axis}/${l.color} intensity ${l.intensity}, expected ${on ? TRAFFIC.lampOn : 0}`);
+          }
+          start += phases[k].s;
+        }
+        const t0 = app.internals.trafficState().time;
+        await waitMs(300);
+        const grew = app.internals.trafficState().time - t0;
+        assert(grew > 0.1, `the signal clock advanced only ${grew.toFixed(3)} s in 300 ms`);
+        return `cycle=${cycle} runs=${runs.length} durations=${runs.slice(0, phases.length).map((r) => (r.count * step).toFixed(2)).join('/')} edges=${edges} clockGrew=${grew.toFixed(2)}s`;
+      } finally {
+        app.internals.trafficSetTime(0);
+      }
+    });
+
+    await check('music:locked', () => {
+      assert(UI_TEXT.musicOn && UI_TEXT.musicOff, 'a music label is empty');
+      assert(UI_TEXT.musicOn !== UI_TEXT.musicOff, 'the two music labels are equal');
+      for (const label of [UI_TEXT.musicOn, UI_TEXT.musicOff]) {
+        assert(!label.includes('(') && !label.includes('·'), `label "${label}" still holds a ( or the middle dot`);
+      }
+      const s = music.state();
+      assert(
+        s.allowed === false && s.unlocked === false && s.on === false && s.active === true && s.running === false && s.scheduled === 0 && s.context === 'none',
+        `locked state was ${JSON.stringify(s)}`
+      );
+      const btn = document.getElementById('music-btn');
+      assert(btn, '#music-btn not found');
+      assert(!btn.hidden && window.getComputedStyle(btn).display !== 'none', 'the music button is not shown');
+      assert(btn.dataset.fact === 'L4', `data-fact was ${btn.dataset.fact}`);
+      assert(btn.dataset.music === 'off', `data-music was ${btn.dataset.music}`);
+      assert(btn.getAttribute('aria-label') === UI_TEXT.musicOn, `aria-label was ${btn.getAttribute('aria-label')}`);
+      assert(btn.title === UI_TEXT.musicOn, `title was ${btn.title}`);
+
+      const r = btn.getBoundingClientRect();
+      assert(r.width > 0 && r.height > 0, `the music button has size ${r.width}x${r.height}`);
+      assert(
+        r.left >= -1 && r.top >= -1 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1,
+        `the music button is outside the viewport: left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} right=${r.right.toFixed(1)} bottom=${r.bottom.toFixed(1)}`
+      );
+      const shown = (el) => el && !el.hidden && window.getComputedStyle(el).display !== 'none';
+      const others = ['minimap', 'skip-2d', 'hint'];
+      if (document.body.classList.contains('touch')) others.push('tc-left', 'tc-right', 'tc-rev', 'tc-gas');
+      for (const id of others) {
+        const el = document.getElementById(id);
+        if (shown(el)) assert(!boxesOverlap(r, el.getBoundingClientRect()), `the music button overlaps #${id}`);
+      }
+      return `rect=${r.left.toFixed(0)},${r.top.toFixed(0)} ${r.width.toFixed(0)}x${r.height.toFixed(0)} label="${UI_TEXT.musicOn}"/"${UI_TEXT.musicOff}"`;
+    });
+
+    await check('music:toggle', async () => {
+      const btn = document.getElementById('music-btn');
+      try {
+        btn.click();
+        let s = music.state();
+        assert(s.unlocked && s.on && s.running, `after the click: ${JSON.stringify(s)}`);
+        assert(btn.dataset.music === 'on', `data-music was ${btn.dataset.music} after the click`);
+        assert(btn.getAttribute('aria-label') === UI_TEXT.musicOff, `aria-label was ${btn.getAttribute('aria-label')} after the click`);
+        assert(readRawPref() === '1', `stored preference was ${readRawPref()} after the click`);
+        await waitMs(700);
+        s = music.state();
+        assert(s.scheduled >= 3, `only ${s.scheduled} steps scheduled after 700 ms`);
+        assert(s.context === 'none', `an audio context exists in the self-test: ${s.context}`);
+        const ran = s.scheduled;
+
+        dispatchKey('keydown', 'KeyB');
+        dispatchKey('keyup', 'KeyB');
+        s = music.state();
+        assert(!s.on && !s.running, `B did not turn the music off: ${JSON.stringify(s)}`);
+        assert(btn.dataset.music === 'off', `data-music was ${btn.dataset.music} after B`);
+        assert(btn.getAttribute('aria-label') === UI_TEXT.musicOn, `aria-label was ${btn.getAttribute('aria-label')} after B`);
+        assert(readRawPref() === '0', `stored preference was ${readRawPref()} after B`);
+        const frozen = s.scheduled;
+        await waitMs(400);
+        assert(music.state().scheduled === frozen, `the scheduler kept running while halted (${frozen} -> ${music.state().scheduled})`);
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', repeat: true, bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', ctrlKey: true, bubbles: true }));
+        s = music.state();
+        assert(!s.on && readRawPref() === '0', `a repeated or Ctrl+B press changed the music: ${JSON.stringify(s)}`);
+
+        ui.open2D();
+        await frames(2);
+        assert(window.getComputedStyle(btn).display === 'none', 'the music button should be display:none in the 2D view');
+        dispatchKey('keydown', 'KeyB');
+        dispatchKey('keyup', 'KeyB');
+        s = music.state();
+        assert(!s.on && !s.active && readRawPref() === '0', `B in the 2D view changed the music: ${JSON.stringify(s)}`);
+        ui.close2D();
+        await frames(2);
+        assert(music.state().active === true, 'the music did not become active again after close2D');
+        return `scheduled=${ran}, frozen at ${frozen}; click -> on, B -> off, repeat/Ctrl+B/2D ignored`;
+      } finally {
+        if (document.body.dataset.view === '2d') ui.close2D();
+        await frames(2);
+      }
+    });
+
+    await check('music:pref', () => {
+      try {
+        const stub = (v) => ({ getItem: () => v });
+        assert(readMusicPref(stub('0')) === false, "a stored '0' should read as off");
+        assert(readMusicPref(stub('1')) === true, "a stored '1' should read as on");
+        assert(readMusicPref(stub(null)) === true, 'a missing value should read as on');
+        assert(readMusicPref(stub('x')) === true, "a stored 'x' should read as on");
+        assert(readMusicPref({ getItem() { throw new Error('blocked'); } }) === true, 'a throwing getItem should read as on');
+        assert(readMusicPref(null) === true, 'a null storage should read as on');
+
+        let threw = false;
+        let wrote;
+        try {
+          wrote = writeMusicPref({ setItem() { throw new Error('quota'); } }, true);
+        } catch (err) {
+          threw = true;
+        }
+        assert(!threw && wrote === false, `writeMusicPref with a throwing setItem: threw=${threw} result=${wrote}`);
+        assert(writeMusicPref(null, true) === false, 'writeMusicPref with a null storage should return false');
+        const saved = [];
+        assert(writeMusicPref({ setItem(k, v) { saved.push([k, v]); } }, false) === true && saved.length === 1 && saved[0][0] === MUSIC.storageKey && saved[0][1] === '0', 'writeMusicPref did not store 0');
+
+        const live = music.state();
+        const raw = readRawPref();
+        assert(raw === (live.pref ? '1' : '0'), `stored preference ${raw} !== ${live.pref ? '1' : '0'} for pref=${live.pref}`);
+        assert(readMusicPref(safeLocal()) === live.pref, `readMusicPref(storage) !== state().pref (${live.pref})`);
+        return `stubs ok; live pref=${live.pref} stored=${raw}`;
+      } finally {
+        restoreRawPref(prefAtStart);
+      }
+    });
+
+    await check('music:synth', () => {
+      const log = { sources: [], freqs: [], errors: [], disconnects: 0 };
+      const param = (initial) => ({
+        value: initial,
+        setValueAtTime(v) { this.value = v; },
+        linearRampToValueAtTime() {},
+        exponentialRampToValueAtTime(v) { if (!(v > 0) || !Number.isFinite(v)) log.errors.push(`exponential ramp to ${v}`); },
+        cancelScheduledValues() {},
+      });
+      const node = (props) => ({ connect() {}, disconnect() { log.disconnects += 1; }, ...props });
+      const source = (props) => {
+        const s = node({ onended: null, startT: null, stopT: null, start(t) { s.startT = t; }, stop(t) { s.stopT = t; }, ...props });
+        log.sources.push(s);
+        return s;
+      };
+      const ctx = {
+        currentTime: 0,
+        sampleRate: 48000,
+        destination: node({}),
+        createGain: () => node({ gain: param(1) }),
+        createBiquadFilter: () => node({ type: '', frequency: param(350) }),
+        createBuffer: (channels, length, rate) => {
+          const data = new Float32Array(length);
+          return { length, sampleRate: rate, numberOfChannels: channels, getChannelData: () => data };
+        },
+        createOscillator: () => {
+          const frequency = param(440);
+          frequency.setValueAtTime = (v) => { log.freqs.push(v); };
+          return source({ type: '', frequency });
+        },
+        createBufferSource: () => source({ buffer: null }),
+      };
+
+      const bus = createBus(ctx);
+      const noise = bus.noise.getChannelData(0);
+      assert(bus.noise.length === Math.round(ctx.sampleRate * 0.05) && noise.length === bus.noise.length, `noise buffer length ${bus.noise.length}`);
+      assert(noise.some((v) => v !== 0) && noise.every((v) => v >= -1 && v <= 1), 'the noise buffer is empty or out of range');
+
+      const stepS = 60 / MUSIC.bpm / 2;
+      let total = 0;
+      let offStep = 0;
+      let badStop = 0;
+      for (let s = 0; s < LOOP_STEPS; s++) {
+        const time = 1 + s * stepS;
+        const before = log.sources.length;
+        const n = scheduleStep(ctx, bus, s, time);
+        assert(log.sources.length - before === n, `step ${s}: returned ${n}, started ${log.sources.length - before}`);
+        total += n;
+        for (let i = before; i < log.sources.length; i++) {
+          if (log.sources[i].startT !== time) offStep += 1;
+          if (!(log.sources[i].stopT > log.sources[i].startT)) badStop += 1;
+        }
+      }
+      const started = log.sources.filter((s) => s.startT !== null).length;
+      const stopped = log.sources.filter((s) => s.stopT !== null).length;
+      assert(total === 111 && started === 111 && stopped === 111, `sources: returned ${total}, started ${started}, stopped ${stopped}, expected 111`);
+
+      const events = loopEvents();
+      const byVoice = { lead: 0, bass: 0, hat: 0 };
+      events.forEach((ev) => { byVoice[ev.voice] += 1; });
+      assert(byVoice.lead === 47 && byVoice.bass === 32 && byVoice.hat === 32, `loop events ${JSON.stringify(byVoice)}, expected 47/32/32`);
+      assert(LOOP_STEPS === 64, `LOOP_STEPS ${LOOP_STEPS} !== 64`);
+      const melodySteps = MUSIC.melody.reduce((a, note) => a + note[1], 0);
+      assert(melodySteps === 64, `the melody sums to ${melodySteps} steps, expected 64`);
+
+      assert(log.freqs.length === 79, `${log.freqs.length} frequencies, expected 79`);
+      assert(log.freqs.every((f) => Number.isFinite(f) && f >= 80 && f <= 700), `a frequency is outside [80, 700] Hz: ${Math.min(...log.freqs).toFixed(1)}..${Math.max(...log.freqs).toFixed(1)}`);
+      assert(offStep === 0, `${offStep} sources did not start on their step time`);
+      assert(badStop === 0, `${badStop} sources stop at or before their start`);
+      assert(log.errors.length === 0, `${log.errors.length} invalid ramps: ${log.errors.slice(0, 3).join('; ')}`);
+
+      log.sources.forEach((s) => { if (typeof s.onended === 'function') s.onended(); });
+      assert(log.disconnects === 222, `${log.disconnects} disconnects after onended, expected 222 (source + gain each)`);
+      return `sources=${total} starts=${started} stops=${stopped} events=${byVoice.lead}/${byVoice.bass}/${byVoice.hat} loop=${LOOP_STEPS} melodySteps=${melodySteps} freqs=${log.freqs.length} range=${Math.min(...log.freqs).toFixed(1)}..${Math.max(...log.freqs).toFixed(1)}Hz disconnects=${log.disconnects}`;
+    });
+
     app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
     ui.closePanel();
     app.internals.renderOnce();
@@ -1101,6 +1655,13 @@ export async function runSelfTest({ api, app, ui }) {
       assert(el, '#minimap not found');
       assert(el.hidden === true, `#minimap hidden was ${el.hidden}`);
     });
+
+    await check('music:hidden2d', () => {
+      const el = document.getElementById('music-btn');
+      assert(el, '#music-btn not found');
+      assert(el.hidden === true, `#music-btn hidden was ${el.hidden}`);
+      assert(music && music.state().active === false, `music active was ${music && music.state().active}`);
+    });
   }
 
   // ---- Always last -----------------------------------------------------
@@ -1116,7 +1677,10 @@ export async function runSelfTest({ api, app, ui }) {
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const resources = performance.getEntriesByType('resource').map((e) => e.name);
   const frameStats = mode === '3d' && app ? app.internals.frameStats() : null;
-  const result = { pass, mode, pixelRatio, quality, viewport, checks, resources, frames: frameStats, visibility: document.visibilityState };
+  const result = {
+    pass, mode, pixelRatio, quality, viewport, checks, resources, frames: frameStats, visibility: document.visibilityState,
+    elapsedMs: Math.round(performance.now() - startedAt),
+  };
 
   const pre = document.createElement('pre');
   pre.id = 'selftest-result';

@@ -10,6 +10,7 @@ export const FACTS = {
   P5: 'Born and raised in Kolkata (Calcutta), India; moved to Seoul for Electrical and Computer Engineering at SNU.',
   P6: 'Languages — English (native), Korean (native), Hindi (third language)',
   P7: 'Every project is framed as 문제 → AI 활용 → 결과물.',
+  P8: `(Auto Updating Portfolio). Spawn subtitle under "DANIEL MOON", Daniel's own wording (2026-09-30).`,
   M1: 'Title: AI-Agent–Assisted MoE Inference Optimization',
   M2: '사용된 모델: Claude Opus, GPT Sol 5.5 Ultra',
   M3: 'Headline: AI 에이전트를 연구 파트너로 활용한 MoE LLM 추론 최적화',
@@ -70,6 +71,7 @@ export const FACTS = {
   H5: 'SHOW & PROVE — 말보다 작동하는 결과물로.',
   L1: 'Title of the EchoNomics details block: 구현 디테일',
   L2: 'Section titles in the 2D view and panels: About · Projects · AI Workflow · GitHub · Career · Contact',
+  L4: 'Music toggle labels: 음악 켜기 · 음악 끄기 (Music on · Music off)',
   C1: 'GitHub — https://github.com/danielmoon0410',
   C2: 'Email — daniel.moon0410@gmail.com',
   C3: 'Email — daniel.moon0410@snu.ac.kr',
@@ -105,12 +107,18 @@ export const HEADINGS = {
   p03: 'AI Portfolio Agent',
 };
 
+// The music button labels are derived from FACTS.L4 so they are never written as literals.
+const MUSIC_LABEL_PREFIX = 'Music toggle labels: ';
+const MUSIC_LABELS = FACTS.L4.slice(MUSIC_LABEL_PREFIX.length).split(' (')[0].split(' \u00b7 ');
+
 export const UI_TEXT = {
   skip: 'Skip to projects',
   back3d: 'Return to the 3D world',
   close: 'Close',
   workflowLink: 'AI Workflow \u2192',
   letters: 'DANIEL MOON',
+  musicOn: MUSIC_LABELS[0],    // label while the music is off (the action it performs)
+  musicOff: MUSIC_LABELS[1],   // label while the music is on
 };
 
 export const SECTIONS = ['about', 'projects', 'workflow', 'github', 'career', 'contact'];

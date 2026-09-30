@@ -7,6 +7,7 @@ import { mulberry32, readPalette, createRenderer, createScene, createPhysics, bu
 import { buildCampus } from './campus.js';
 import { buildStations } from './stations.js';
 import { buildLetters } from './letters.js';
+import { buildTraffic } from './traffic.js';
 import { createVehicle } from './vehicle.js';
 import { createInput } from './input.js';
 import { getView, setPromptStation, getOpenPanelId, closePanel } from './ui.js';
@@ -26,6 +27,7 @@ export async function buildApp({ canvas, touch, onStep }) {
 
   const rng = mulberry32(SEED);
   buildWorld({ scene, world, palette, rng, maxAnisotropy });
+  const traffic = buildTraffic({ scene, world, palette });
   await onStep('world');
 
   const campus = buildCampus({ scene, world, palette, rng, maxAnisotropy });
@@ -34,7 +36,7 @@ export async function buildApp({ canvas, touch, onStep }) {
   const stations = buildStations({ scene, world, palette, maxAnisotropy });
   await onStep('stations');
 
-  const letters = buildLetters({ scene, world, palette });
+  const letters = buildLetters({ scene, world, palette, maxAnisotropy });
   await onStep('letters');
 
   const vehicle = createVehicle({ scene, world, palette });
@@ -146,7 +148,8 @@ export async function buildApp({ canvas, touch, onStep }) {
   const input = createInput({
     isActive: () => running && getView() === '3d',
     onReset: () => {
-      vehicle.resetToRoad();
+      // R returns to the spawn; the flip/fall auto-reset (vehicle.checkAutoReset) still puts the car on the nearest road.
+      vehicle.placeAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
       snapCamera();
     },
   });
@@ -173,6 +176,7 @@ export async function buildApp({ canvas, touch, onStep }) {
       prevPadId = id;
     }
     stations.update(lastTime / 1000, dt, id);
+    traffic.update(dt);
 
     updateCameraSmooth(dt);
     updateSun();
@@ -315,6 +319,17 @@ export async function buildApp({ canvas, touch, onStep }) {
       off: { frames: frameStatsOff.frames, meanMs: frameStatsOff.frames ? frameStatsOff.sumMs / frameStatsOff.frames : 0 },
     }),
     minimapLabels: () => minimap.labelLayout(),
+    subtitleInfo: () => letters.subtitleInfo(),
+    landscapeInfo: () => campus.landscapeInfo(),
+    trafficState: () => traffic.state(),
+    trafficSetTime: (t) => traffic.setTime(t),
+    trafficInfo: () => traffic.info(),
+    // World point -> css pixels of the canvas (y down); z is the ndc depth (< 1 in front of the far plane).
+    project: (x, y, z) => {
+      camera.updateMatrixWorld();
+      const v = new THREE.Vector3(x, y, z).project(camera);
+      return { x: ((v.x + 1) / 2) * canvas.clientWidth, y: ((1 - v.y) / 2) * canvas.clientHeight, z: v.z };
+    },
   };
 
   return { start, pause, resume, carPosition, quality, internals };

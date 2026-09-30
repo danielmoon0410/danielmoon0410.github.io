@@ -191,7 +191,6 @@ export const CAMPUS = {
     { minX: -84, maxX: 84, minZ: -598, maxZ: -530 },
   ],
   pool: { x: 65, z: -35, w: 56, d: 26 },
-  trees: { count: 180, minSpacing: 5 },
   lamps: { x: 7, zFrom: -20, zTo: -540, step: 26, skipNear: 8 },
   facadeCell: [3, 4],   // metres per facade texture tile (w, h)
 };
@@ -221,6 +220,51 @@ export const SHOT = {
   defaultFacing: [0, -1],                           // [dirX, dirZ] for placeCarAt; aims the follow camera at the scenery
   facing: { moe: [-1, 0], echonomics: [1, 0], workflow: [1, 0], 'gh-portfolio': [1, 0], 'gh-influence': [1, 0],
             'gh-ces2026': [1, 0], 'gh-echonomics': [1, 0], career: [-1, 0] },
-  views: { poster: { x: 0, z: -520, facing: [0, -1] } },   // QA view of the poster, not a station
+  views: { poster: { x: 0, z: -520, facing: [0, -1] }, spawn: { x: 0, z: 14, facing: [0, -1] }, junction: { x: 0, z: -100, facing: [0, -1] }, pond: { x: -45, z: -60, facing: [0, -1] } },   // QA views, not stations
   hosts: ['localhost', '127.0.0.1', '[::1]'],   // ?shot= is honoured only on these hostnames
+};
+
+// Spawn subtitle (letters.js): a floor decal. The letters' front face is at z -3.7; the about pad's ring reaches z -1.175 at its largest (radius 5).
+export const SUBTITLE = { canvas: [2048, 512], width: 15, depth: 2.45, z: -2.425, y: 0.08, measurePx: 100, inkW: 0.72, inkH: 0.86 };
+
+// landscape.js; scatter uses mulberry32(SEED + seedOffset). Ponds are fixed like CAMPUS.buildings; each gets one bridge along z.
+export const LANDSCAPE = {
+  seedOffset: 23,
+  trees: { count: 300, minSpacing: 5, attemptsPer: 40, species: [
+    { name: 'round', weight: 0.5, scale: [0.85, 1.35] },
+    { name: 'conifer', weight: 0.3, scale: [0.9, 1.5] },
+    { name: 'blossom', weight: 0.2, scale: [0.75, 1.15] },
+  ] },
+  beds: { count: 40, attemptsPer: 80, r: [1.4, 2.6], aspect: [0.65, 1], gap: 3, treeGap: 1.5, flowersPerM2: 2.2,
+    minFlowers: 10, moundHeight: 0.45, secondaryShare: 0.2, colors: ['flower-red', 'flower-yellow', 'flower-violet', 'white', 'orange'] },
+  ponds: [{ x: -45, z: -85, rx: 12, rz: 8 }, { x: 98, z: -292, rx: 12, rz: 9 }],
+  pondMargin: 3,
+  rim: { segments: 32, width: 0.5, height: 0.3, colliderHeight: 0.6 },
+  bridge: { width: 5, deckHeight: 0.45, thickness: 0.2, overhang: 1, rampLength: 6, railHeight: 0.9, postStep: 2, corridorHalfWidth: 10, corridorPad: 14 },
+};
+
+// traffic.js. Axis 'z' = traffic along z (the boulevard); axis 'x' = the row roads.
+export const TRAFFIC = {
+  junctions: [{ id: 'j1', x: 0, z: -120 }, { id: 'j2', x: 0, z: -255 }, { id: 'j3', x: 0, z: -390 }],
+  phases: [
+    { z: 'green', x: 'red', s: 9 }, { z: 'yellow', x: 'red', s: 2 }, { z: 'red', x: 'red', s: 1 },
+    { z: 'red', x: 'green', s: 9 }, { z: 'red', x: 'yellow', s: 2 }, { z: 'red', x: 'red', s: 1 },
+  ],
+  crosswalk: { inner: 5.5, depth: 3, stripes: 7, stripeWidth: 0.5, pitch: 1, y: 0.065 },
+  dashClear: 11,   // world.js: no centre dash closer than this to a junction centre
+  pole: { offset: 6.5, height: 4.4, headY: 3.7, lampStep: 0.32, lampRadius: 0.12 },
+  lampOn: 1.2, lampOffScale: 0.25,
+};
+
+// music.js. melody: [midi, steps] on an 8th-note grid, 8 bars x 8 steps; bass: roots[bar] + bassPattern on steps 0,2,4,6.
+export const MUSIC = {
+  bpm: 126, lookAheadS: 0.3, tickMs: 100, master: 0.28, fadeS: 0.3, storageKey: 'hynix-portfolio.music',
+  lead: { peak: 0.1, lowpassHz: 2400 }, bass: { peak: 0.22 }, hat: { peak: 0.05, decayS: 0.04, highpassHz: 6000 },
+  melody: [
+    [64, 1], [67, 1], [72, 2], [71, 1], [67, 1], [64, 2],  [62, 1], [67, 1], [71, 2], [69, 1], [67, 1], [62, 2],
+    [60, 1], [64, 1], [69, 2], [67, 1], [64, 1], [60, 2],  [57, 1], [60, 1], [65, 2], [64, 1], [62, 1], [60, 2],
+    [64, 1], [67, 1], [72, 1], [76, 1], [74, 2], [72, 2],  [71, 1], [74, 1], [67, 2], [69, 1], [71, 1], [67, 2],
+    [69, 1], [72, 1], [65, 2], [67, 1], [69, 1], [65, 2],  [62, 2], [67, 2], [65, 1], [62, 1], [59, 2],
+  ],
+  roots: [48, 43, 45, 41, 48, 43, 41, 43], bassPattern: [0, 12, 7, 12], hatSteps: [1, 3, 5, 7],
 };

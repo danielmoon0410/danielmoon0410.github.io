@@ -4,6 +4,7 @@ import { installErrorHandlers, logError } from './errors.js';
 import * as ui from './ui.js';
 import { VERSION, SHOT } from './config.js';
 import { STATIONS } from './content.js';
+import { createMusic } from './music.js';
 
 installErrorHandlers();
 
@@ -22,6 +23,9 @@ const flags = {
   selftest: flagOn('selftest') && !shotMode,
 };
 
+// Audio never starts by itself: only PRESS START, the HUD button or the B key unlock it (autostart, shot mode and the self-test never do).
+const music = createMusic({ allowed: !shotMode && !flags.selftest });
+
 const touch =
   flags.touch ||
   (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
@@ -32,14 +36,19 @@ let app = null;
 let started = false;
 
 ui.initUI({
-  onStart: start,
+  onStart: () => {
+    music.gesture();
+    start();
+  },
   touch,
   onViewChange: (v) => {
     if (!app || !started) return;
     if (v === '2d') {
       app.pause();
+      music.setActive(false);
     } else {
       app.resume();
+      music.setActive(true);
     }
   },
 });
@@ -142,7 +151,10 @@ function start() {
   if (started) return;
   started = true;
   ui.hideLoader();
-  if (app) app.start();
+  if (app) {
+    app.start();
+    music.setActive(true);
+  }
   ui.showHint(true);
   ui.showTouchControls(touch);
   if (document.activeElement && typeof document.activeElement.blur === 'function') {
@@ -168,7 +180,7 @@ function fallback2D(err) {
 
 async function runSelftest() {
   const { runSelfTest } = await import('./selftest.js');
-  await runSelfTest({ api: window.__PORTFOLIO__, app, ui });
+  await runSelfTest({ api: window.__PORTFOLIO__, app, ui, music });
 }
 
 async function runShotMode() {

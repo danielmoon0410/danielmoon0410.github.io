@@ -23,6 +23,7 @@ import {
   SEED,
   CAMPUS,
   PAD_RADIUS,
+  TRAFFIC,
 } from './config.js';
 import { buildSlot } from './assets.js';
 import { renderPixelRatio } from './quality.js';
@@ -40,7 +41,7 @@ export function mulberry32(seed) {
 
 const COLOR_KEYS = ['bg', 'floor', 'grid', 'road', 'trace', 'cyan', 'magenta', 'amber', 'violet', 'chip', 'pin', 'text', 'muted'];
 
-// The 37 --w-* names from css/style.css :root, without the prefix, excluding "sign".
+// The 47 --w-* names from css/style.css :root, without the prefix, excluding "sign".
 const WORLD_KEYS = [
   'sky-top', 'sky-mid', 'sky-horizon', 'ground-far', 'sun', 'white',
   'paving', 'paving-joint', 'inlay', 'road', 'road-line',
@@ -49,6 +50,8 @@ const WORLD_KEYS = [
   'ink', 'ink-muted', 'orange', 'orange-deep', 'lamp',
   'tyre', 'rim', 'car-glass',
   'acc-trace', 'acc-cyan', 'acc-magenta', 'acc-amber', 'acc-violet',
+  'flower-red', 'flower-yellow', 'flower-violet', 'blossom', 'conifer', 'wood', 'pond',
+  'signal-red', 'signal-yellow', 'signal-green',
 ];
 
 export function readPalette() {
@@ -482,6 +485,9 @@ function buildRoadTiles(palette) {
 
       const nearPad = pads.some((p) => Math.hypot(px - p.x, pz - p.z) < PAD_RADIUS + 1.5);
       if (nearPad) continue;
+
+      // traffic.js paints the crosswalks here; no centre dash near a junction.
+      if (TRAFFIC.junctions.some((j) => Math.hypot(px - j.x, pz - j.z) < TRAFFIC.dashClear)) continue;
 
       const g = new THREE.BoxGeometry(3, 0.01, 0.25);
       g.rotateY(-angle);

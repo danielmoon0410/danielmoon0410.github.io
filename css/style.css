@@ -23,6 +23,7 @@
   --w-ink: #262b33; --w-ink-muted: #5d6673; --w-orange: #f47725; --w-orange-deep: #d9501e; --w-lamp: #fff0d2;
   --w-tyre: #2a2c30; --w-rim: #c9ced4; --w-car-glass: #3a4856;
   --w-acc-trace: #2e9e86; --w-acc-cyan: #3f8fd2; --w-acc-magenta: #cf5a8e; --w-acc-amber: #e0a13a; --w-acc-violet: #7f69c9;
+  --w-flower-red: #e8505b; --w-flower-yellow: #f4c542; --w-flower-violet: #9a6fd0; --w-blossom: #f2b6c6; --w-conifer: #3f7a5a; --w-wood: #b98a5e; --w-pond: #6fa8b8; --w-signal-red: #e2483d; --w-signal-yellow: #f3a534; --w-signal-green: #3cb86f;
   --w-sign: rgba(255, 255, 255, 0.93);
 }
 
@@ -577,6 +578,60 @@ body.touch #minimap {
     width: 104px;
     height: 146px;
   }
+}
+
+/* ---- Music button (run 5a): under the minimap, 8 px gap (248 px / 146 px tall) ---- */
+#music-btn {
+  position: fixed;
+  top: calc(max(16px, env(safe-area-inset-top)) + 256px);
+  left: max(16px, env(safe-area-inset-left));
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--c-trace);
+  background: var(--c-panel);
+  color: var(--c-text);
+  cursor: pointer;
+}
+
+body.touch #music-btn {
+  top: calc(max(16px, env(safe-area-inset-top)) + 154px);
+}
+
+@media (max-width: 700px) {
+  #music-btn {
+    top: calc(max(16px, env(safe-area-inset-top)) + 154px);
+  }
+}
+
+#music-btn kbd {
+  background: var(--c-chip);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+body.touch #music-btn kbd {
+  display: none;
+}
+
+#music-btn[data-music="off"] .music-waves,
+#music-btn[data-music="on"] .music-mute {
+  display: none;
+}
+
+body[data-view="2d"] #music-btn {
+  display: none;
+}
+
+body[data-shot] #music-btn {
+  display: none !important;
 }
 
 /* ---- Shot mode (?shot=<station-id>): canvas only ---- */
