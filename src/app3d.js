@@ -139,6 +139,7 @@ export async function buildApp({ canvas, touch, onStep }) {
   let running = false;
   let renderEnabled = true;
   let qualityHeld = false;
+  let fixedSize = null;
   let renderCount = 0;
   const frameStatsOn = { frames: 0, sumMs: 0 };    // frame() count and summed raw frame time while renderEnabled; never reset
   const frameStatsOff = { frames: 0, sumMs: 0 };   // the same while render is off (the drive checks)
@@ -218,6 +219,7 @@ export async function buildApp({ canvas, touch, onStep }) {
   }
 
   function handleResize() {
+    if (fixedSize) return;   // shot mode: the window can no longer change the capture
     const width = canvas.clientWidth || window.innerWidth || 1;
     const height = canvas.clientHeight || window.innerHeight || 1;
     resize(width, height);
@@ -269,6 +271,16 @@ export async function buildApp({ canvas, touch, onStep }) {
     holdQuality: (on) => { qualityHeld = Boolean(on); },     // shot mode: frame() stops sampling the quality meter
     setBloom: (on) => { bloomPass.enabled = Boolean(on); },   // shot mode: the composition pair is rendered without bloom
     poseScene: (t) => { stations.update(t, 0, prevPadId); traffic.setTime(0); },   // only while the loop is paused
+    fixRenderSize: (w, h) => {   // shot mode: an exact w x h drawing buffer at pixel ratio 1, and the camera aspect to match
+      fixedSize = [w, h];
+      renderer.setPixelRatio(1);
+      renderer.setSize(w, h, false);
+      composer.setPixelRatio(1);
+      composer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.fov = w / h < 1 ? CAMERA.fovPortrait : CAMERA.fov;
+      camera.updateProjectionMatrix();
+    },
     worldBounds: () => ({ ...WORLD_BOUNDS }),
     posterInfo: () => campus.posterInfo(),
     bloomSettings: () => ({ strength: bloomPass.strength, radius: bloomPass.radius, threshold: bloomPass.threshold, enabled: bloomPass.enabled }),

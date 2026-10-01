@@ -1,6 +1,7 @@
 // ?shot=<station-id> capture mode. Never runs unless main.js detects the
 // `shot` query parameter; see spec run-2 §4.3. A capture is deterministic: the quality level is
-// held, the scene is posed at SHOT.sceneTime and the signal clock is 0 before the first render.
+// held, the drawing buffer and the camera aspect are pinned to SHOT.size, the scene is posed at
+// SHOT.sceneTime and the signal clock is 0 before the first render.
 // It publishes three frames: #shot-result (every pass, bloom included; this is the image that
 // gets written to assets/shots), and the bloom-free pair #shot-comp (car) and #shot-ref (car
 // hidden) that build-pdf.ps1 diffs to find the car and to prove nothing else moved.
@@ -55,6 +56,7 @@ export async function runShot({ app, canvas, stationId }) {
     if (!isStation && !isView) return fail('unknown station');
     if (!app || !canvas) return fail('webgl unavailable');
     app.internals.holdQuality(true);   // never released: frame() stops sampling the quality meter, so data-quality stays 'high'
+    app.internals.fixRenderSize(SHOT.size[0], SHOT.size[1]);   // an exact 1280x720 buffer and camera aspect: a shrinking window can no longer change the capture
 
     let px;
     let pz;

@@ -227,6 +227,7 @@ export const SHOT = {
   views: { poster: { x: 0, z: -520, facing: [0, -1] }, spawn: { x: 0, z: 14, facing: [0, -1] }, junction: { x: 0, z: -100, facing: [0, -1] }, pond: { x: -45, z: -60, facing: [0, -1] } },   // QA views, not stations
   hosts: ['localhost', '127.0.0.1', '[::1]'],   // ?shot= is honoured only on these hostnames
   sceneTime: 0,   // shot.js poses sign bob, pad rings, robots and the expert grid at this time, and the signal clock at 0
+  size: [1280, 720],   // shot.js pins the drawing buffer and the camera aspect to this, whatever the window does
 };
 
 // Spawn subtitle (letters.js): a floor decal. The letters' front face is at z -4.2; the about pad's ring reaches z -1.175 at its largest (radius 5).
