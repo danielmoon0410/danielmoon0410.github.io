@@ -42,7 +42,7 @@ export const FACTS = {
   W6: 'One command runs it all: /ship <request> runs the four stages in order and confirms each handoff file exists before moving on.',
   W7: 'Right model for each job: Opus where one careful decision sets the ceiling (planning and review, once per feature); Sonnet where most tokens are spent (coding and testing). By design, about 70% of tokens go to Sonnet and 30% to Opus.',
   W8: `Why the Reviewer can't edit code: a reviewer that can patch problems tends to hide them; one that can only judge has to report them. "Green tests are not the same as correct behavior." — Ray Fu`,
-  W9: "A human stays the last gate: I decide what goes live. A build that fails its tests never ships, and every Reviewer finding becomes the next run's work.",
+  W9: "A human stays the last gate: I decide what goes live. Every change passes its in-browser self-test before it ships; the full test suite and the Reviewer check it right after, and their findings become the next run's work.",
   W10: 'Habits that make it work: write specific requests; start with small, bounded features; read every .pipeline file to learn how the agents think; clear .pipeline between runs; run parallel features in separate git worktrees.',
   W11: 'This site is the proof: this pipeline planned, coded, tested and reviewed it run after run, including a bug the Reviewer caught that 201 passing tests had missed.',
   W12: 'Files that define the team: .claude/agents/ (planner, coder, tester, reviewer), .claude/commands/ship.md, and the .pipeline/ handoff folder.',

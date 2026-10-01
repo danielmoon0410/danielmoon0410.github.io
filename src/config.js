@@ -53,7 +53,7 @@ export const SCENERY_ZONES = [
 
 export const LETTERS = {
   centerX: 0,
-  z: -4,
+  z: -4.5,
   pixel: 0.5,
   depth: 0.6,
   advance: 6,
@@ -154,6 +154,10 @@ export const SCENERY = {
   tower: { offsetX: -15 },
 };
 
+// stations.js sign centres (before the ±0.3 m bob) and x offsets from the pad. about clears DANIEL MOON in ?shot=about;
+// workflow floats over the robot row, above the robots' labels, in ?shot=workflow.
+export const SIGNS = { y: 5.5, overrides: { about: { dx: 0, y: 6.3 }, workflow: { dx: SCENERY.robots.offsetX, y: 6.6 } } };
+
 // Buildings are { kind, x, z, w, d, h }: centre, x-size, z-size, height, in metres.
 // Each one was checked to stay at least 6 m clear of every road.
 export const CAMPUS = {
@@ -222,9 +226,10 @@ export const SHOT = {
             'gh-ces2026': [1, 0], 'gh-echonomics': [1, 0], career: [-1, 0] },
   views: { poster: { x: 0, z: -520, facing: [0, -1] }, spawn: { x: 0, z: 14, facing: [0, -1] }, junction: { x: 0, z: -100, facing: [0, -1] }, pond: { x: -45, z: -60, facing: [0, -1] } },   // QA views, not stations
   hosts: ['localhost', '127.0.0.1', '[::1]'],   // ?shot= is honoured only on these hostnames
+  sceneTime: 0,   // shot.js poses sign bob, pad rings, robots and the expert grid at this time, and the signal clock at 0
 };
 
-// Spawn subtitle (letters.js): a floor decal. The letters' front face is at z -3.7; the about pad's ring reaches z -1.175 at its largest (radius 5).
+// Spawn subtitle (letters.js): a floor decal. The letters' front face is at z -4.2; the about pad's ring reaches z -1.175 at its largest (radius 5).
 export const SUBTITLE = { canvas: [2048, 512], width: 15, depth: 2.45, z: -2.425, y: 0.08, measurePx: 100, inkW: 0.72, inkH: 0.86 };
 
 // landscape.js; scatter uses mulberry32(SEED + seedOffset). Ponds are fixed like CAMPUS.buildings; each gets one bridge along z.
@@ -253,7 +258,7 @@ export const TRAFFIC = {
   crosswalk: { inner: 5.5, depth: 3, stripes: 7, stripeWidth: 0.5, pitch: 1, y: 0.065 },
   dashClear: 11,   // world.js: no centre dash closer than this to a junction centre
   pole: { offset: 6.5, height: 4.4, headY: 3.7, lampStep: 0.32, lampRadius: 0.12 },
-  lampOn: 1.2, lampOffScale: 0.25,
+  lampOn: 0.7, lampOffScale: 0.25,
 };
 
 // music.js. melody: [midi, steps] on an 8th-note grid, 8 bars x 8 steps; bass: roots[bar] + bassPattern on steps 0,2,4,6.

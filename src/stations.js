@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY } from './config.js';
+import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY, SIGNS } from './config.js';
 import { STATIONS, ROBOT_LABELS, TICKER_LINES } from './content.js';
 import { visibleCareer } from './render.js';
 import { statusLightMaterial } from './world.js';
@@ -96,11 +96,12 @@ function buildPads(scene, palette) {
     innerMesh.position.set(pos.x, 0.12, pos.z);
     scene.add(innerMesh);
 
+    const o = Object.prototype.hasOwnProperty.call(SIGNS.overrides, station.id) ? SIGNS.overrides[station.id] : { dx: 0, y: SIGNS.y };
     const sign = makeLabelSprite(station.sign, { accent: station.accent, palette });
-    sign.position.set(pos.x, 5.5, pos.z);
+    sign.position.set(pos.x + o.dx, o.y, pos.z);
     scene.add(sign);
 
-    pads.set(station.id, { station, pos, torusMesh, sign, index });
+    pads.set(station.id, { station, pos, torusMesh, sign, signY: o.y, index });
   });
   return pads;
 }
@@ -413,7 +414,7 @@ export function buildStations({ scene, world, palette, maxAnisotropy }) {
       const idleRadius = 3 + Math.sin(1.5 * t + entry.index) * 1;
       const targetRadius = id === activeId ? 5 : idleRadius;
       entry.torusMesh.scale.setScalar(targetRadius / 4);
-      entry.sign.position.y = 5.5 + 0.3 * Math.sin(1.5 * t + entry.index);
+      entry.sign.position.y = entry.signY + 0.3 * Math.sin(1.5 * t + entry.index);
     });
     moe.update(t);
     ticker.update(dt);

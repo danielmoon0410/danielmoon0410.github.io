@@ -317,7 +317,7 @@ export function buildLandscape(group, world, palette) {
 
   const rim = cfg.rim;
   const rimMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: palette.w.concrete, roughness: 0.85 }), rim.segments * ponds.length);
-  const halfWidth = cfg.bridge.width / 2 + 0.5;
+  const deckHalfX = cfg.bridge.width / 2;
   let ri = 0;
   ponds.forEach((p, pi) => {
     const body = new CANNON.Body({ type: CANNON.Body.STATIC });
@@ -327,8 +327,9 @@ export function buildLandscape(group, world, palette) {
       m.compose(pos.set(c.mx, rim.height / 2, c.mz), q, scl.set(c.len + 0.15, rim.height, rim.width));
       rimMesh.setMatrixAt(ri++, m);
 
-      // The chords under the bridge get no collider, so the deck can cross the rim.
-      if (c.maxX >= bx - halfWidth && c.minX <= bx + halfWidth) continue;
+      // Only the chords that lie entirely under the deck get no collider, so the deck can cross the rim; the chords beside
+      // the deck keep theirs and close the gap next to the rails.
+      if (c.minX >= bx - deckHalfX && c.maxX <= bx + deckHalfX) continue;
       const orientation = new CANNON.Quaternion();
       orientation.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), c.yaw);
       body.addShape(

@@ -157,13 +157,9 @@ export function buildTraffic({ scene, world, palette }) {
     appliedPhase = s.phase;
     for (const g of lampGroups) {
       g.on = s[g.axis] === g.color;
-      if (g.on) {
-        g.material.color.copy(g.base);
-        g.material.emissiveIntensity = TRAFFIC.lampOn;
-      } else {
-        g.material.color.copy(g.base).multiplyScalar(TRAFFIC.lampOffScale);
-        g.material.emissiveIntensity = 0;
-      }
+      // Lit and unlit lamps share the dark body, and only the emission differs, so a lit lamp keeps its hue under ACES.
+      g.material.color.copy(g.base).multiplyScalar(TRAFFIC.lampOffScale);
+      g.material.emissiveIntensity = g.on ? TRAFFIC.lampOn : 0;
     }
   }
   refresh();

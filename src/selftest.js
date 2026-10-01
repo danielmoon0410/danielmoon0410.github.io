@@ -1161,7 +1161,7 @@ export async function runSelfTest({ api, app, ui, music }) {
         const h = Math.max(...ys) - top;
         assert(h >= 0.014 * H, `projected ink height ${h.toFixed(1)} px < ${(0.014 * H).toFixed(1)} px (1.4% of ${H})`);
         const lettersBase = app.internals.project(LETTERS.centerX, 0, LETTERS.z + LETTERS.depth / 2);
-        assert(top >= lettersBase.y - 2, `the ink top (${top.toFixed(1)} px) is above the letters' base (${lettersBase.y.toFixed(1)} px)`);
+        assert(top >= lettersBase.y + 1, `the ink top (${top.toFixed(1)} px) is less than 1 px below the letters' base (${lettersBase.y.toFixed(1)} px)`);
         return `text="${info.text}" h=${h.toFixed(1)}px top=${top.toFixed(1)} lettersBase=${lettersBase.y.toFixed(1)} inkW=${info.inkWidthRatio.toFixed(3)} inkH=${info.inkHeightRatio.toFixed(3)} offset=${info.inkCenterOffset.toFixed(4)} z=${info.zMin.toFixed(3)}..${info.zMax.toFixed(3)}`;
       } finally {
         await toSpawn();
@@ -1347,6 +1347,45 @@ export async function runSelfTest({ api, app, ui, music }) {
         assert(end.z >= rimZ + 1.2 && end.z <= rimZ + 4, `final z ${end.z.toFixed(2)} outside [${(rimZ + 1.2).toFixed(2)}, ${(rimZ + 4).toFixed(2)}] (rim at ${rimZ.toFixed(2)})`);
         assert(Math.abs(speed) <= 1.5, `speed ${speed.toFixed(2)} still above 1.5 at the rim`);
         return `lane=${laneX.toFixed(1)} rimZ=${rimZ.toFixed(2)} endZ=${end.z.toFixed(2)} speed=${speed.toFixed(2)} minRadius=${minRadius.toFixed(3)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        app.internals.setRender(true);
+        await toSpawn();
+      }
+    });
+
+    // Drives at the bridge's inner lane (0.1 m clear of the deck, ramp and rails) toward the water: the rim chords beside the deck must stop the car.
+    await check('pond:gap', async () => {
+      const info = app.internals.landscapeInfo();
+      app.internals.setRender(false);
+      try {
+        const parts = [];
+        for (let i = 0; i < info.bridges.length; i++) {
+          const b = info.bridges[i];
+          const pond = info.ponds[b.pond];
+          const laneX = b.x + 3.6;
+          app.internals.placeCarAt(laneX, pond.z + pond.rz + 8, 0, -1);
+          await waitSim(0.5, 5000);
+          dispatchKey('keydown', 'KeyW');
+          const t0 = performance.now();
+          const s0 = app.internals.simTime();
+          let minRadius = Infinity;
+          while (app.internals.simTime() - s0 < 3) {
+            if (performance.now() - t0 >= 15000) throw new Error(`pond ${i}: physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+            await nextTick();
+            const p = api.carPosition();
+            minRadius = Math.min(minRadius, Math.hypot((p.x - pond.x) / pond.rx, (p.z - pond.z) / pond.rz));
+          }
+          dispatchKey('keyup', 'KeyW');
+          const end = api.carPosition();
+          const speed = st().speed;
+          const rimZ = pond.z + pond.rz * Math.sqrt(1 - ((laneX - pond.x) / pond.rx) ** 2);
+          assert(minRadius > 1, `pond ${i}: the car centre entered the pond beside the bridge (normalised radius ${minRadius.toFixed(3)})`);
+          assert(end.z >= rimZ + 1.2 && end.z <= rimZ + 4, `pond ${i}: final z ${end.z.toFixed(2)} outside [${(rimZ + 1.2).toFixed(2)}, ${(rimZ + 4).toFixed(2)}] (rim at ${rimZ.toFixed(2)})`);
+          assert(Math.abs(speed) <= 1.5, `pond ${i}: speed ${speed.toFixed(2)} still above 1.5 at the rim`);
+          parts.push(`p${i}: lane=${laneX.toFixed(1)} rimZ=${rimZ.toFixed(2)} endZ=${end.z.toFixed(2)} speed=${speed.toFixed(2)} minRadius=${minRadius.toFixed(3)}`);
+        }
+        return parts.join('; ');
       } finally {
         dispatchKey('keyup', 'KeyW');
         app.internals.setRender(true);
@@ -1627,6 +1666,44 @@ export async function runSelfTest({ api, app, ui, music }) {
       log.sources.forEach((s) => { if (typeof s.onended === 'function') s.onended(); });
       assert(log.disconnects === 222, `${log.disconnects} disconnects after onended, expected 222 (source + gain each)`);
       return `sources=${total} starts=${started} stops=${stopped} events=${byVoice.lead}/${byVoice.bass}/${byVoice.hat} loop=${LOOP_STEPS} melodySteps=${melodySteps} freqs=${log.freqs.length} range=${Math.min(...log.freqs).toFixed(1)}..${Math.max(...log.freqs).toFixed(1)}Hz disconnects=${log.disconnects}`;
+    });
+
+    // The real graph (createBus + scheduleStep) rendered by a real, silent OfflineAudioContext: no user gesture, no sound.
+    // music:synth above uses plain-object mocks, which cannot catch a Web Audio rule violation.
+    await check('music:render', async () => {
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      assert(typeof OAC === 'function', 'this browser has no OfflineAudioContext');
+      const stepS = 60 / MUSIC.bpm / 2;
+      const rate = 22050;
+      const seconds = LOOP_STEPS * stepS + 0.5;
+      const ctx = new OAC(1, Math.ceil(seconds * rate), rate);
+      const bus = createBus(ctx);
+      bus.master.gain.value = MUSIC.master;   // createBus starts silent; in the live app, play() ramps the gain up
+      let started = 0;
+      for (let s = 0; s < LOOP_STEPS; s++) started += scheduleStep(ctx, bus, s, 0.05 + s * stepS);
+      const t0 = performance.now();
+      const buffer = await ctx.startRendering();   // not raced against a timeout: virtual time would fire it early
+      const renderMs = performance.now() - t0;
+      const data = buffer.getChannelData(0);
+      let peak = 0;
+      let sumSq = 0;
+      let finite = true;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        if (!Number.isFinite(v)) {
+          finite = false;
+          break;
+        }
+        const a = Math.abs(v);
+        if (a > peak) peak = a;
+        sumSq += v * v;
+      }
+      const rms = data.length > 0 ? Math.sqrt(sumSq / data.length) : 0;
+      assert(started === 111, `${started} sources started, expected 111`);
+      assert(finite, 'the rendered audio holds a sample that is not finite');
+      assert(peak >= 0.01 && peak <= 0.9, `peak ${peak.toFixed(4)} outside [0.01, 0.9]`);
+      assert(rms >= 0.001, `rms ${rms.toFixed(5)} < 0.001`);
+      return `sources=${started} rate=${rate} seconds=${seconds.toFixed(2)} samples=${data.length} peak=${peak.toFixed(3)} rms=${rms.toFixed(4)} renderMs=${Math.round(renderMs)}`;
     });
 
     app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);

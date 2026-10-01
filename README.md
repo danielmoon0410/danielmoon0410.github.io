@@ -1,27 +1,21 @@
 # danielmoon0410.github.io
 
-Personal portfolio website — Daniel Moon, AI Hardware Researcher at Seoul National University.
+Daniel Moon's playable 3D portfolio. Drive around a bright tech-campus world to explore his projects, AI workflow, GitHub repositories and career.
 
-## Deploy
+**Live:** https://danielmoon0410.github.io/
 
-1. Create a new repository named `danielmoon0410.github.io` on GitHub
-2. Push the contents of this folder to the `main` branch
-3. Go to **Settings → Pages → Source** and select `Deploy from a branch` / `main` / `/ (root)`
-4. Your site will be live at `https://danielmoon0410.github.io`
+## Controls
+- **W A S D / arrow keys:** drive. **Space** brakes; **S** also brakes while moving forward.
+- **R:** back to the start.
+- **E / Enter** at a glowing pad: open that station.
+- **M:** minimap. **B:** music on/off.
+- **Skip to projects:** a plain 2D view with the same content.
 
-## Structure
+## How it is built
+- three.js and cannon-es as native ES modules from jsDelivr, with no build step.
+- Built by a four-agent Claude Code pipeline: Planner (Claude Opus) → Coder (Claude Sonnet) → Tester (Claude Sonnet) → Reviewer (Claude Opus). Daniel is the final gate.
+- Every change passes its in-browser self-test before it ships. The full test suite and the Reviewer check it right after, and their findings become the next run's work.
 
-```
-├── index.html          # Main site (client-side routed SPA)
-├── assets/
-│   ├── profile.jpg     # Profile photo
-│   └── CV_resume.pdf   # Downloadable CV
-└── README.md
-```
-
-## Pages
-
-- **About** — Introduction, research interests, background
-- **CV** — Education, work experience, skills, military service
-- **Publications** — Papers and research projects
-- **Personal** — Languages, extracurriculars, contact info
+## Credits
+- Inspired by Bruno Simon's playable portfolio (bruno-simon.com).
+- Pipeline pattern adapted from Ray Fu, "How to Build a 4-Agent Dev Team That Ships Features While You Sleep".

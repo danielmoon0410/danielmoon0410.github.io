@@ -1,5 +1,9 @@
 // ?shot=<station-id> capture mode. Never runs unless main.js detects the
-// `shot` query parameter; see spec run-2 §4.3.
+// `shot` query parameter; see spec run-2 §4.3. A capture is deterministic: the quality level is
+// held, the scene is posed at SHOT.sceneTime and the signal clock is 0 before the first render.
+// It publishes three frames: #shot-result (every pass, bloom included; this is the image that
+// gets written to assets/shots), and the bloom-free pair #shot-comp (car) and #shot-ref (car
+// hidden) that build-pdf.ps1 diffs to find the car and to prove nothing else moved.
 import { SHOT } from './config.js';
 import { STATIONS } from './content.js';
 import { logError } from './errors.js';
@@ -50,6 +54,7 @@ export async function runShot({ app, canvas, stationId }) {
     const isView = Object.prototype.hasOwnProperty.call(SHOT.views, stationId);
     if (!isStation && !isView) return fail('unknown station');
     if (!app || !canvas) return fail('webgl unavailable');
+    app.internals.holdQuality(true);   // never released: frame() stops sampling the quality meter, so data-quality stays 'high'
 
     let px;
     let pz;
@@ -79,36 +84,48 @@ export async function runShot({ app, canvas, stationId }) {
 
     const uiHidden = isUiHidden();
 
-    // Synchronous: pause, render, then read back in the same task as the
-    // draw. Reading back after an await (even a microtask) risks the
-    // compositor handing back a black frame.
+    // Synchronous: pause, pose, render, then read back in the same task as
+    // the draw. Reading back after an await (even a microtask) risks the
+    // compositor handing back a black frame. All three renders happen in
+    // this one task with the loop paused, so nothing can animate between them.
     app.pause();
     app.internals.snapCamera();
+    app.internals.poseScene(SHOT.sceneTime);
     app.internals.renderOnce();
-    const url = canvas.toDataURL(SHOT.mime, SHOT.quality);
-    // Reference frame: the same camera and scene without the car. build-pdf.ps1 finds the car in the
-    // captured pixels as the difference between the two frames.
+    const url = canvas.toDataURL(SHOT.mime, SHOT.quality);   // published frame: every pass, bloom included
+    // Composition pair. Bloom spreads the car's absence over the whole frame (review run 5a, section 1), so the pair has none.
+    // build-pdf.ps1 finds the car as the difference between the two frames and fails the capture if anything else differs.
+    let compUrl = '';
     let refUrl = '';
-    app.internals.setCarVisible(false);
+    const bloomWas = app.internals.bloomSettings().enabled;
+    app.internals.setBloom(false);
     try {
+      app.internals.renderOnce();
+      compUrl = canvas.toDataURL(SHOT.mime, SHOT.quality);
+      app.internals.setCarVisible(false);
       app.internals.renderOnce();
       refUrl = canvas.toDataURL(SHOT.mime, SHOT.quality);
     } finally {
       app.internals.setCarVisible(true);
+      app.internals.setBloom(bloomWas);
     }
 
-    if (!url.startsWith('data:image/jpeg;base64,') || !refUrl.startsWith('data:image/jpeg;base64,')) return fail('no image');
+    const jpegPrefix = 'data:image/jpeg;base64,';
+    if (!url.startsWith(jpegPrefix) || !compUrl.startsWith(jpegPrefix) || !refUrl.startsWith(jpegPrefix)) return fail('no image');
 
     pre.textContent = url;
     pre.dataset.width = canvas.width;
     pre.dataset.height = canvas.height;
     pre.dataset.quality = app.quality();
     pre.dataset.uiHidden = uiHidden ? 'true' : 'false';
-    const ref = document.createElement('pre');
-    ref.id = 'shot-ref';
-    ref.hidden = true;
-    ref.textContent = refUrl;
-    document.body.appendChild(ref);
+    // The pair is published only now, so a failure path leaves neither pre in the DOM.
+    for (const [id, text] of [['shot-comp', compUrl], ['shot-ref', refUrl]]) {
+      const extra = document.createElement('pre');
+      extra.id = id;
+      extra.hidden = true;
+      extra.textContent = text;
+      document.body.appendChild(extra);
+    }
     document.body.dataset.shotStatus = 'done';
     return { status: 'done', detail: '' };
   } catch (err) {

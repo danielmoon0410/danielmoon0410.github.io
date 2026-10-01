@@ -197,8 +197,24 @@ export function createMusic({ allowed }) {
     gain.linearRampToValueAtTime(target, t + MUSIC.fadeS);
   }
 
+  // The AudioContext is created on the first play(), which always runs inside a gesture (PRESS START, the button, B).
+  function ensureContext() {
+    if (ctx || !allowed || !supported) return;
+    try {
+      ctx = new AC();
+      bus = createBus(ctx);
+    } catch (err) {
+      supported = false;
+      ctx = null;
+      bus = null;
+      btn.hidden = true;
+    }
+  }
+
   function play() {
     if (running) return;
+    ensureContext();
+    if (!supported) { render(); return; }
     running = true;
     if (suspendTimer !== null) {
       clearTimeout(suspendTimer);
@@ -247,16 +263,6 @@ export function createMusic({ allowed }) {
 
   function unlock() {
     unlocked = true;
-    if (allowed && supported && !ctx) {
-      try {
-        ctx = new AC();
-        bus = createBus(ctx);
-      } catch (err) {
-        supported = false;
-        ctx = null;
-        bus = null;
-      }
-    }
   }
 
   function gesture() {

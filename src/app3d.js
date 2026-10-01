@@ -138,6 +138,7 @@ export async function buildApp({ canvas, touch, onStep }) {
 
   let running = false;
   let renderEnabled = true;
+  let qualityHeld = false;
   let renderCount = 0;
   const frameStatsOn = { frames: 0, sumMs: 0 };    // frame() count and summed raw frame time while renderEnabled; never reset
   const frameStatsOff = { frames: 0, sumMs: 0 };   // the same while render is off (the drive checks)
@@ -182,7 +183,7 @@ export async function buildApp({ canvas, touch, onStep }) {
     updateSun();
     minimap.update(vehicle.position(), vehicle.forward());
 
-    if (meter.sample(lastTime, rawDeltaMs, document.visibilityState !== 'hidden')) applyQualityLevel(meter.index());
+    if (!qualityHeld && meter.sample(lastTime, rawDeltaMs, document.visibilityState !== 'hidden')) applyQualityLevel(meter.index());
     const bucket = renderEnabled ? frameStatsOn : frameStatsOff;
     bucket.frames += 1;
     bucket.sumMs += rawDeltaMs;
@@ -265,6 +266,9 @@ export async function buildApp({ canvas, touch, onStep }) {
     setRender: (on) => { renderEnabled = Boolean(on); },    // test-only: frame() skips composer.render() while off
     renderCount: () => renderCount,                         // frames rendered by the loop (renderOnce not counted)
     setCarVisible: (on) => vehicle.setVisible(Boolean(on)),
+    holdQuality: (on) => { qualityHeld = Boolean(on); },     // shot mode: frame() stops sampling the quality meter
+    setBloom: (on) => { bloomPass.enabled = Boolean(on); },   // shot mode: the composition pair is rendered without bloom
+    poseScene: (t) => { stations.update(t, 0, prevPadId); traffic.setTime(0); },   // only while the loop is paused
     worldBounds: () => ({ ...WORLD_BOUNDS }),
     posterInfo: () => campus.posterInfo(),
     bloomSettings: () => ({ strength: bloomPass.strength, radius: bloomPass.radius, threshold: bloomPass.threshold, enabled: bloomPass.enabled }),
