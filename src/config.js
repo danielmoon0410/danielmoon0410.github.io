@@ -274,3 +274,60 @@ export const MUSIC = {
   ],
   roots: [48, 43, 45, 41, 48, 43, 41, 43], bassPattern: [0, 12, 7, 12], hatSteps: [1, 3, 5, 7],
 };
+
+// run 6 (stations.js): each station's building and door. A door is the doorway centre on the facade (x, z) and its outward
+// normal (nx, nz). The checkpoint is a circle of `radius` around the point `front` m out from the door (left beyond
+// exitRadius); leaving a building parks the car there, facing the door. halls are new buildings (world footprints); the
+// GitHub repo towers and the career tower get their door on the existing facade.
+export const DOORS = {
+  radius: 4, exitRadius: 5, front: 3.5,
+  opening: [2.8, 3], frame: [0.3, 0.4], panelDepth: 0.06,
+  mat: { radius: 2.2, tube: 0.1, y: 0.08 },
+  hall: { height: 6.5, plinth: 0.3, plinthPad: 0.2, roof: 0.5, roofPad: 0.3 },
+  halls: {
+    about: { minX: 14, maxX: 21, minZ: -1, maxZ: 11 },
+    moe: { minX: -157, maxX: -145, minZ: -137, maxZ: -128 },
+    echonomics: { minX: 145, maxX: 157, minZ: -137, maxZ: -128 },
+    'portfolio-agent': { minX: -152, maxX: -144, minZ: -258, maxZ: -248 },   // shifted +2 m in z with its door (doors:place: a tree stood 2.13 m south of -260..-250)
+    workflow: { minX: 151, maxX: 157, minZ: -261, maxZ: -249 },
+    contact: { minX: 9, maxX: 17, minZ: -377, maxZ: -367 },
+  },
+  doors: {
+    about: { x: 14, z: 5, nx: -1, nz: 0 },
+    moe: { x: -145, z: -132.5, nx: 1, nz: 0 },
+    echonomics: { x: 145, z: -132.5, nx: -1, nz: 0 },
+    'portfolio-agent': { x: -144, z: -253, nx: 1, nz: 0 },
+    workflow: { x: 151, z: -255, nx: -1, nz: 0, front: 7 },   // parks in front of the robot row
+    'gh-portfolio': { x: 145, z: -430, nx: -1, nz: 0 },
+    'gh-influence': { x: 145, z: -450, nx: -1, nz: 0 },
+    'gh-ces2026': { x: 145, z: -470, nx: -1, nz: 0 },
+    'gh-echonomics': { x: 145, z: -490, nx: -1, nz: 0 },
+    career: { x: -145, z: -390, nx: 1, nz: 0 },
+    contact: { x: 9, z: -372, nx: -1, nz: 0 },
+  },
+};
+
+// run 6 (interior.js): one room, re-skinned per station, off-map; local x across, z from the back wall (-) to the entrance (+).
+export const INTERIOR = {
+  origin: [0, 400], size: [20, 14, 6], canvas: [1024, 512],
+  slots: [   // reading order; c = centre [x, y, z], s = [w, h], face = the wall normal
+    { c: [-4.5, 2.55, -6.88], s: [8.4, 4.2], face: '+z', screen: true },
+    { c: [4.5, 2.55, -6.88], s: [8.4, 4.2], face: '+z', screen: true },
+    { c: [-9.97, 2.5, -3.4], s: [6, 3], face: '+x' },
+    { c: [-9.97, 2.5, 3.4], s: [6, 3], face: '+x' },
+    { c: [9.97, 2.5, -3.4], s: [6, 3], face: '-x' },
+    { c: [9.97, 2.5, 3.4], s: [6, 3], face: '-x' },
+  ],
+  sign: { y: 5.35, z: -6.6, worldWidth: 4.8 },
+  text: { startPx: 30, minPx: 18, stepPx: 2, lineHeight: 1.35, gap: 0.45, margin: 40, border: 8, title: 1.5, eyebrow: 0.8, heading: 1.1, indent: 24 },
+  panelGlow: 0.45,
+  walker: { start: [0, 5], yaw: Math.PI, speed: 3, backSpeed: 1.6, turnRate: 2.6, radius: 0.35, stride: 2.2, swing: 0.6 },
+  camera: { distance: 4.2, height: 2.6, lookAhead: 2, lookHeight: 1.4, margin: 0.4 },
+};
+
+// person.js: one low-poly person (metres). Limbs hang from their pivots; yaw 0 faces +z, forward = (sin yaw, cos yaw).
+export const PERSON = {
+  hipY: 0.88, legLen: 0.86, leg: [0.15, 0.17], legX: 0.1,
+  torso: [0.42, 0.6, 0.24], shoulderY: 1.42, armLen: 0.6, arm: [0.11, 0.12], armX: 0.27,
+  headR: 0.13, headY: 1.66,
+};

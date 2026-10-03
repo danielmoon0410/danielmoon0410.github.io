@@ -4,7 +4,7 @@ import { STATIONS, SECTIONS, CAREER, CV, FACTS, UI_TEXT } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
 import {
   SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS, MINIMAP, QUALITY, MAX_PIXEL_RATIO,
-  LETTERS, PADS, PAD_RADIUS, ROADS, ROAD_WIDTH, CAMPUS, SCENERY_ZONES, LANDSCAPE, TRAFFIC, MUSIC,
+  LETTERS, PADS, PAD_RADIUS, ROADS, ROAD_WIDTH, CAMPUS, SCENERY_ZONES, LANDSCAPE, TRAFFIC, MUSIC, DOORS, INTERIOR, SCENERY,
 } from './config.js';
 import { nearestRoadPoint } from './world.js';
 import { renderPixelRatio } from './quality.js';
@@ -629,8 +629,8 @@ export async function runSelfTest({ api, app, ui, music }) {
     if (document.body.classList.contains('touch')) {
       await check('layout:touch', async () => {
         try {
-          const p = app.internals.padPosition('about');
-          app.internals.placeCarAt(p.x, p.z, 0, -1);
+          const d = app.internals.doorPoint('about');
+          app.internals.placeCarAt(d.x, d.z, d.dirX, d.dirZ);
           await frames(3);
 
           const ids = ['hint', 'prompt', 'tc-left', 'tc-right', 'tc-rev', 'tc-gas'];
@@ -678,38 +678,78 @@ export async function runSelfTest({ api, app, ui, music }) {
       });
     }
 
+    // Run 6: a station's checkpoint is its door zone. E at the door walks in, E inside opens the panel, Esc closes it, Esc again walks out.
+    const leaveIfInside = () => {
+      if (document.body.dataset.interior) app.internals.exitBuilding();
+    };
+
     for (const station of STATIONS) {
       await check(`pad:${station.id}`, async () => {
-        const pos = app.internals.padPosition(station.id);
-        assert(pos, `no pad position for ${station.id}`);
-
-        app.internals.placeCarAt(pos.x, pos.z, 0, -1);
-        await frames(3);
+        const id = station.id;
         const prompt = document.getElementById('prompt');
-        assert(prompt && !prompt.hidden, 'prompt not visible on pad');
-        assert(prompt.dataset.station === station.id, `prompt station mismatch: ${prompt.dataset.station}`);
+        try {
+          const d = app.internals.doorPoint(id);
+          assert(d, `no door point for ${id}`);
 
-        dispatchKey('keydown', 'KeyE');
-        dispatchKey('keyup', 'KeyE');
-        assert(ui.getOpenPanelId() === station.id, `panel not open for ${station.id}`);
+          app.internals.placeCarAt(d.x, d.z, d.dirX, d.dirZ);
+          await frames(3);
+          assert(prompt && !prompt.hidden, 'prompt not visible at the door');
+          assert(prompt.dataset.station === id, `prompt station mismatch: ${prompt.dataset.station}`);
+          assert(prompt.dataset.action === 'enter', `prompt action was ${prompt.dataset.action}, expected enter`);
+          assert(prompt.textContent.includes(UI_TEXT.enter), `prompt text "${prompt.textContent}" lacks "${UI_TEXT.enter}"`);
 
-        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
-        await frames(3);
-        assert(document.getElementById('prompt').hidden, 'prompt should be hidden away from any pad');
-        assert(document.getElementById('panel').hidden, 'panel should be hidden away from any pad');
+          dispatchKey('keydown', 'KeyE');
+          dispatchKey('keyup', 'KeyE');
+          assert(document.body.dataset.interior === id, `E at the door did not walk into ${id} (interior=${document.body.dataset.interior})`);
+          assert(ui.getOpenPanelId() === null, 'the panel must stay closed on entering');
+
+          await frames(2);
+          dispatchKey('keydown', 'KeyE');
+          dispatchKey('keyup', 'KeyE');
+          assert(ui.getOpenPanelId() === id, `panel not open for ${id} inside the building`);
+
+          dispatchKey('keydown', 'Escape');
+          assert(ui.getOpenPanelId() === null && document.body.dataset.interior === id, 'the first Escape must only close the panel');
+
+          dispatchKey('keydown', 'Escape');
+          assert(document.body.dataset.interior === undefined, 'the second Escape did not leave the building');
+
+          await frames(2);
+          const pos = api.carPosition();
+          const dist = Math.hypot(pos.x - d.x, pos.z - d.z);
+          assert(dist <= 0.5, `the car is ${dist.toFixed(2)} m from the door point after leaving`);
+          assert(!prompt.hidden && prompt.dataset.action === 'enter', 'prompt not visible again at the door after leaving');
+        } finally {
+          leaveIfInside();
+          app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+          await frames(3);
+        }
+        assert(document.getElementById('prompt').hidden, 'prompt should be hidden away from any door');
+        assert(document.getElementById('panel').hidden, 'panel should be hidden away from any door');
       });
     }
 
     await check('prompt:tap', async () => {
-      const station = STATIONS[0];
-      const pos = app.internals.padPosition(station.id);
-      app.internals.placeCarAt(pos.x, pos.z, 0, -1);
-      await frames(3);
-      document.getElementById('prompt').click();
-      assert(ui.getOpenPanelId() === station.id, 'prompt click did not open the panel');
-      ui.closePanel();
-      app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
-      await frames(3);
+      try {
+        const d = app.internals.doorPoint(STATIONS[0].id);
+        app.internals.placeCarAt(d.x, d.z, d.dirX, d.dirZ);
+        await frames(3);
+        document.getElementById('prompt').click();
+        assert(document.body.dataset.interior === STATIONS[0].id, 'prompt click did not walk into the building');
+        await frames(2);
+        document.getElementById('prompt').click();
+        assert(ui.getOpenPanelId() === STATIONS[0].id, 'prompt click inside did not open the panel');
+        ui.closePanel();
+        document.getElementById('exit-btn').click();
+        assert(document.body.dataset.interior === undefined, 'the exit button did not leave the building');
+        const pos = api.carPosition();
+        const dist = Math.hypot(pos.x - d.x, pos.z - d.z);
+        assert(dist <= 0.5, `the car is ${dist.toFixed(2)} m from the door point after the exit button`);
+      } finally {
+        leaveIfInside();
+        app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
+        await frames(3);
+      }
     });
 
     await check('esc', async () => {
@@ -1706,6 +1746,279 @@ export async function runSelfTest({ api, app, ui, music }) {
       return `sources=${started} rate=${rate} seconds=${seconds.toFixed(2)} samples=${data.length} peak=${peak.toFixed(3)} rms=${rms.toFixed(4)} renderMs=${Math.round(renderMs)}`;
     });
 
+    // ---- Run 6: station halls, doors, door zones and the interiors ------------------------------------------------
+    await check('doors:place', () => {
+      const info = app.internals.landscapeInfo();
+      const doorIds = Object.keys(DOORS.doors);
+      const hallIds = Object.keys(DOORS.halls);
+      assert(doorIds.length === 11 && STATIONS.every((s) => doorIds.includes(s.id)), `${doorIds.length} doors, expected one per station id: ${doorIds}`);
+      assert(hallIds.length === 6, `${hallIds.length} halls, expected 6`);
+
+      const rectDist = (x, z, r) => Math.hypot(Math.max(r.minX - x, 0, x - r.maxX), Math.max(r.minZ - z, 0, z - r.maxZ));
+      const roadDist = (x, z, r) => {
+        const [x1, z1, x2, z2] = r;
+        const dx = x2 - x1;
+        const dz = z2 - z1;
+        const len2 = dx * dx + dz * dz;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / len2)) : 0;
+        return Math.hypot(x - (x1 + dx * t), z - (z1 + dz * t));
+      };
+
+      let minTreeGap = Infinity;
+      for (const id of hallIds) {
+        const h = DOORS.halls[id];
+        const bodies = app.internals.bodiesOverlapping(h.minX + 0.1, h.maxX - 0.1, h.minZ + 0.1, h.maxZ - 0.1);
+        assert(bodies === 0, `hall ${id}: ${bodies} static collider(s) inside its footprint`);
+        for (const t of info.trees) {
+          const gap = rectDist(t.x, t.z, h);
+          minTreeGap = Math.min(minTreeGap, gap);
+          assert(gap >= 2.5, `hall ${id}: the tree at (${t.x.toFixed(1)}, ${t.z.toFixed(1)}) is ${gap.toFixed(2)} m from the footprint < 2.5`);
+        }
+        for (const b of info.beds) {
+          const gap = rectDist(b.x, b.z, h);
+          assert(gap >= b.r + 1, `hall ${id}: the bed at (${b.x.toFixed(1)}, ${b.z.toFixed(1)}) r=${b.r.toFixed(2)} is ${gap.toFixed(2)} m from the footprint < r + 1`);
+        }
+        for (let x = h.minX; x <= h.maxX + 1e-9; x += 1) {
+          for (let z = h.minZ; z <= h.maxZ + 1e-9; z += 1) {
+            for (const r of ROADS) {
+              assert(roadDist(x, z, r) >= ROAD_WIDTH / 2 + 1, `hall ${id}: the point (${x}, ${z}) is ${roadDist(x, z, r).toFixed(2)} m from a road < ${ROAD_WIDTH / 2 + 1}`);
+            }
+          }
+        }
+
+        const d = DOORS.doors[id];
+        assert(d, `hall ${id} has no door`);
+        assert(Math.abs(d.nx) + Math.abs(d.nz) === 1, `door ${id}: the normal (${d.nx}, ${d.nz}) is not an axis unit vector`);
+        const faceAt = d.nx !== 0 ? (d.nx > 0 ? h.maxX : h.minX) : (d.nz > 0 ? h.maxZ : h.minZ);
+        const onFace = d.nx !== 0 ? d.x : d.z;
+        assert(Math.abs(onFace - faceAt) < 1e-6, `door ${id} is at ${onFace}, not on the face at ${faceAt} its normal points out of`);
+        const [lo, hi] = d.nx !== 0 ? [h.minZ, h.maxZ] : [h.minX, h.maxX];
+        const along = d.nx !== 0 ? d.z : d.x;
+        assert(along - lo >= 2 && hi - along >= 2, `door ${id} is ${Math.min(along - lo, hi - along).toFixed(2)} m from a corner < 2`);
+      }
+
+      for (const s of STATIONS.filter((st) => st.id.startsWith('gh-'))) {
+        const want = PADS[s.id].x + SCENERY.repos.offsetX - SCENERY.repos.size / 2;
+        assert(Math.abs(DOORS.doors[s.id].x - want) <= 0.01, `door ${s.id} x ${DOORS.doors[s.id].x} is not on the tower's near face ${want}`);
+      }
+      const careerWant = PADS.career.x + SCENERY.tower.offsetX + 5;
+      assert(Math.abs(DOORS.doors.career.x - careerWant) <= 0.01, `door career x ${DOORS.doors.career.x} is not on the tower's near face ${careerWant}`);
+
+      // The car parks on the zone centre facing the door: its 4 x 2 m footprint must be free of colliders.
+      const zones = [];
+      for (const s of STATIONS) {
+        const p = app.internals.doorPoint(s.id);
+        assert(p, `no door point for ${s.id}`);
+        zones.push({ id: s.id, x: p.x, z: p.z });
+        const hx = Math.abs(p.dirX) > 0.5 ? 2 : 1;
+        const hz = Math.abs(p.dirX) > 0.5 ? 1 : 2;
+        const n = app.internals.bodiesOverlapping(p.x - hx, p.x + hx, p.z - hz, p.z + hz);
+        assert(n === 0, `door ${s.id}: ${n} static collider(s) in the parking rectangle at (${p.x}, ${p.z})`);
+      }
+      let minZoneGap = Infinity;
+      for (let i = 0; i < zones.length; i++) {
+        for (let j = i + 1; j < zones.length; j++) {
+          minZoneGap = Math.min(minZoneGap, Math.hypot(zones[i].x - zones[j].x, zones[i].z - zones[j].z));
+        }
+      }
+      assert(minZoneGap >= 2 * DOORS.radius + 1, `two door zones are ${minZoneGap.toFixed(2)} m apart < ${2 * DOORS.radius + 1}`);
+      const spawnGap = Math.min(...zones.map((z) => Math.hypot(z.x - SPAWN.x, z.z - SPAWN.z)));
+      assert(spawnGap >= DOORS.exitRadius + 1, `the spawn is ${spawnGap.toFixed(2)} m from a door zone centre < ${DOORS.exitRadius + 1}`);
+      return `halls=${hallIds.length} doors=${doorIds.length} minTreeGap=${minTreeGap.toFixed(2)} minZoneGap=${minZoneGap.toFixed(2)} spawnGap=${spawnGap.toFixed(2)}`;
+    });
+
+    // Drives at the gh-influence tower: the prompt must appear in the door zone, and the tower must stop the car.
+    await check('door:drive', async () => {
+      app.internals.setRender(false);
+      const prompt = document.getElementById('prompt');
+      const shown = () => !prompt.hidden && prompt.dataset.station === 'gh-influence';
+      try {
+        app.internals.placeCarAt(133, -450, 1, 0);
+        await waitSim(0.5, 5000);
+
+        dispatchKey('keydown', 'KeyW');
+        const t0 = performance.now();
+        const s0 = app.internals.simTime();
+        let tPrompt = null;
+        while (app.internals.simTime() - s0 < 4) {
+          if (shown()) {
+            tPrompt = app.internals.simTime() - s0;
+            break;
+          }
+          if (performance.now() - t0 >= 15000) throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+          await nextTick();
+        }
+        dispatchKey('keyup', 'KeyW');
+
+        dispatchKey('keydown', 'Space');
+        await waitSim(1.5, 8000);
+        const end = api.carPosition();
+        const speed = st().speed;
+        assert(tPrompt !== null, 'the gh-influence prompt did not appear in 4 s of driving at its door');
+        assert(end.x <= 143.1, `final x ${end.x.toFixed(2)} > 143.1: the car got into the tower`);
+        assert(Math.abs(speed) <= 0.5, `speed ${speed.toFixed(2)} still above 0.5 after braking at the door`);
+        assert(shown(), 'the gh-influence prompt is gone after stopping at the door');
+        return `tPrompt=${tPrompt.toFixed(2)} finalX=${end.x.toFixed(2)} speed=${speed.toFixed(2)}`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keyup', 'Space');
+        app.internals.setRender(true);
+        await toSpawn();
+      }
+    });
+
+    // The room's walls must carry exactly the station panel's text: every eyebrow, title, copy line and summary, in order, untruncated.
+    await check('interior:copy', () => {
+      const parts = [];
+      for (const station of STATIONS) {
+        const r = app.internals.interiorCopy(station.id);
+        assert(r, `no interior copy for ${station.id}`);
+        assert(ui.openPanel(station.id) === true, `openPanel(${station.id}) failed`);
+        const expected = [];
+        const eyebrow = document.getElementById('panel-eyebrow');
+        if (eyebrow && !eyebrow.hidden) expected.push(eyebrow.textContent);
+        expected.push(document.getElementById('panel-title').textContent);
+        document.querySelectorAll('#panel-body p.copy-line, #panel-body summary').forEach((el) => expected.push(el.textContent));
+        ui.closePanel();
+
+        const got = r.items.map((i) => i.text);
+        assert(JSON.stringify(got) === JSON.stringify(expected), `${station.id}: the wall text differs from the panel (${got.length} items vs ${expected.length})`);
+        for (const item of r.items) {
+          assert(item.drawn === item.text, `${station.id}: the ${item.kind} "${item.text.slice(0, 24)}" is drawn as "${item.drawn.slice(0, 24)}"`);
+        }
+        assert(!r.overflow, `${station.id}: the text does not fit ${INTERIOR.slots.length} pages at ${INTERIOR.text.minPx}px`);
+        assert(r.fontPx >= INTERIOR.text.minPx, `${station.id}: font ${r.fontPx}px < ${INTERIOR.text.minPx}px`);
+        assert(r.slotsUsed <= INTERIOR.slots.length, `${station.id}: ${r.slotsUsed} pages > ${INTERIOR.slots.length}`);
+        parts.push(`${station.id}:${r.fontPx}px/${r.slotsUsed}`);
+      }
+      return parts.join(' ');
+    });
+
+    await check('interior:walk', async () => {
+      const t0 = app.internals.textureCount();
+      const o0 = app.internals.interiorState().outdoorVisible;
+      const R = INTERIOR.walker.radius;
+      const dp = app.internals.doorPoint('about');
+      const stateNow = () => app.internals.interiorState();
+      try {
+        app.internals.placeCarAt(dp.x, dp.z, dp.dirX, dp.dirZ);
+        await frames(3);
+        dispatchKey('keydown', 'KeyE');
+        dispatchKey('keyup', 'KeyE');
+        const s = stateNow();
+        assert(s.inside === 'about' && s.rootVisible === true, `after E: inside=${s.inside} rootVisible=${s.rootVisible}`);
+        assert(s.outdoorVisible === 0, `${s.outdoorVisible} outdoor object(s) still visible inside`);
+        const exitBtn = document.getElementById('exit-btn');
+        assert(exitBtn && !exitBtn.hidden && window.getComputedStyle(exitBtn).display !== 'none', '#exit-btn is not shown inside');
+        const label = exitBtn.querySelector('[data-fact="L6"]');
+        assert(label && label.textContent === UI_TEXT.exit, `exit label "${label && label.textContent}" !== "${UI_TEXT.exit}"`);
+        assert(window.getComputedStyle(document.getElementById('hint')).display === 'none', '#hint is still displayed inside');
+        await frames(2);
+
+        const w0 = stateNow().walker;
+        dispatchKey('keydown', 'KeyW');
+        await waitMs(1000);
+        dispatchKey('keyup', 'KeyW');
+        await waitMs(200);
+        const w1 = stateNow().walker;
+        const moved = Math.hypot(w1.x - w0.x, w1.z - w0.z);
+        assert(moved >= 1.5 && w1.z - w0.z <= -1.2, `W moved the walker ${moved.toFixed(2)} m with dz ${(w1.z - w0.z).toFixed(2)}`);
+
+        dispatchKey('keydown', 'KeyA');
+        await waitMs(400);
+        dispatchKey('keyup', 'KeyA');
+        await waitMs(200);
+        const w2 = stateNow().walker;
+        const yaw = Math.abs(w2.yaw - w1.yaw);
+        assert(yaw >= 0.5, `A turned the walker only ${yaw.toFixed(2)} rad`);
+
+        const b = stateNow().bounds;
+        const bad = [];
+        dispatchKey('keydown', 'KeyW');
+        const tw = performance.now();
+        while (performance.now() - tw < 2500) {
+          await nextTick();
+          const q = stateNow();
+          const w = q.walker;
+          if (w.x < b.minX + R - 1e-3 || w.x > b.maxX - R + 1e-3 || w.z < b.minZ + R - 1e-3 || w.z > b.maxZ - R + 1e-3) bad.push(`walker (${w.x.toFixed(2)}, ${w.z.toFixed(2)})`);
+          const c = q.camera;
+          if (c.x < b.minX || c.x > b.maxX || c.z < b.minZ || c.z > b.maxZ || c.y < 0 || c.y > b.height) bad.push(`camera (${c.x.toFixed(2)}, ${c.y.toFixed(2)}, ${c.z.toFixed(2)})`);
+        }
+        dispatchKey('keyup', 'KeyW');
+        await waitMs(200);
+        assert(bad.length === 0, `${bad.length} sample(s) outside the room: ${bad.slice(0, 2).join('; ')}`);
+
+        const wr = stateNow().walker;
+        dispatchKey('keydown', 'KeyR');
+        dispatchKey('keyup', 'KeyR');
+        await frames(2);
+        const sr = stateNow();
+        const dr = Math.hypot(sr.walker.x - wr.x, sr.walker.z - wr.z);
+        assert(sr.inside === 'about' && dr <= 0.01, `R inside: inside=${sr.inside}, the walker moved ${dr.toFixed(3)} m`);
+        const cp = api.carPosition();
+        assert(Math.hypot(cp.x - dp.x, cp.z - dp.z) <= 0.5, `R inside moved the car to (${cp.x.toFixed(1)}, ${cp.z.toFixed(1)})`);
+
+        const stats = app.internals.renderStats();
+        assert(stats.calls <= 60, `${stats.calls} draw calls inside > 60`);
+
+        document.getElementById('exit-btn').click();
+        await frames(2);
+        const so = stateNow();
+        assert(so.inside === null, `still inside ${so.inside} after the exit button`);
+        const pos = api.carPosition();
+        const park = Math.hypot(pos.x - dp.x, pos.z - dp.z);
+        const h = st().heading;
+        const dot = h.x * dp.dirX + h.z * dp.dirZ;
+        assert(park <= 0.5, `the car is ${park.toFixed(2)} m from the door point after leaving`);
+        assert(dot >= 0.99, `the car's heading dot with the door direction is ${dot.toFixed(3)} < 0.99`);
+        assert(so.outdoorVisible === o0, `${so.outdoorVisible} outdoor object(s) visible after leaving, expected ${o0}`);
+        assert(so.rootVisible === false, 'the interior is still visible after leaving');
+        const t1 = app.internals.textureCount();
+        assert(t1 <= t0, `${t1} textures after leaving > ${t0} before`);
+        return `moved=${moved.toFixed(2)} yaw=${yaw.toFixed(2)} calls=${stats.calls} park=${park.toFixed(2)} dot=${dot.toFixed(3)} textures=${t0}->${t1}`;
+      } finally {
+        leaveIfInside();
+        await toSpawn();
+      }
+    });
+
+    await check('layout:interior', async () => {
+      try {
+        assert(app.internals.enterBuilding('about') === true, 'enterBuilding(about) returned false');
+        await frames(2);
+        const ids = ['exit-btn', 'prompt'];
+        if (document.body.classList.contains('touch')) ids.push('tc-left', 'tc-right', 'tc-rev', 'tc-gas');
+        const rects = {};
+        for (const id of ids) {
+          const el = document.getElementById(id);
+          assert(el, `#${id} not found`);
+          const r = el.getBoundingClientRect();
+          assert(r.width > 0 && r.height > 0, `#${id} has non-positive size ${r.width}x${r.height}`);
+          assert(
+            r.left >= -1 && r.top >= -1 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1,
+            `#${id} rect outside viewport: left=${r.left.toFixed(1)} top=${r.top.toFixed(1)} right=${r.right.toFixed(1)} bottom=${r.bottom.toFixed(1)}`
+          );
+          rects[id] = r;
+        }
+        for (let i = 0; i < ids.length; i++) {
+          for (let j = i + 1; j < ids.length; j++) {
+            assert(!boxesOverlap(rects[ids[i]], rects[ids[j]]), `#${ids[i]} overlaps #${ids[j]} by more than 1px`);
+          }
+        }
+        for (const id of ['hint', 'minimap']) {
+          assert(window.getComputedStyle(document.getElementById(id)).display === 'none', `#${id} is displayed inside a building`);
+        }
+        assert(
+          document.documentElement.scrollWidth <= window.innerWidth,
+          `scrollWidth ${document.documentElement.scrollWidth} > innerWidth ${window.innerWidth}`
+        );
+        return `vw=${window.innerWidth} vh=${window.innerHeight}`;
+      } finally {
+        leaveIfInside();
+        await toSpawn();
+      }
+    });
+
     app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
     ui.closePanel();
     app.internals.renderOnce();
@@ -1738,6 +2051,13 @@ export async function runSelfTest({ api, app, ui, music }) {
       assert(el, '#music-btn not found');
       assert(el.hidden === true, `#music-btn hidden was ${el.hidden}`);
       assert(music && music.state().active === false, `music active was ${music && music.state().active}`);
+    });
+
+    await check('exit:hidden2d', () => {
+      const el = document.getElementById('exit-btn');
+      assert(el, '#exit-btn not found');
+      assert(el.hidden === true, `#exit-btn hidden was ${el.hidden}`);
+      assert(document.body.dataset.interior === undefined, `data-interior was ${document.body.dataset.interior}`);
     });
   }
 

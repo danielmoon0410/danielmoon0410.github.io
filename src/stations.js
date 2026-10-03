@@ -1,9 +1,9 @@
-// Pads, sign sprites, station scenery and pad detection.
+// Pads, sign sprites, station scenery, pad detection and (run 6) the station halls, doors and door zones.
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY, SIGNS } from './config.js';
+import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY, SIGNS, DOORS } from './config.js';
 import { STATIONS, ROBOT_LABELS, TICKER_LINES } from './content.js';
 import { visibleCareer } from './render.js';
 import { statusLightMaterial } from './world.js';
@@ -11,7 +11,7 @@ import { facadeMaterial, boxWithWorldUV } from './campus.js';
 
 const ACCENT_KEY_BY_ROBOT = { Planner: 'cyan', Coder: 'magenta', Tester: 'amber', Reviewer: 'violet' };
 
-function roundRect(ctx, x, y, w, h, r) {
+export function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -401,13 +401,98 @@ function buildTower(scene, world, palette) {
   return { slabCount: n };
 }
 
-export function buildStations({ scene, world, palette, maxAnisotropy }) {
+// ---- Run 6: halls, doors and door zones -------------------------------------------------------------------------
+
+// The door's own frame: x across, y up, z along the outward normal, the facade at z = 0. Two jambs and a lintel (their back
+// faces 0.05 m inside the facade) around the opening, and the door panel (its front face 0.03 m proud of the facade).
+// interior.js builds the entrance wall's door from the same parts.
+export function doorGeometry() {
+  const [openW, openH] = DOORS.opening;
+  const [frameT, frameD] = DOORS.frame;
+  const frameZ = -0.05 + frameD / 2;
+  const jamb = (side) => new THREE.BoxGeometry(frameT, openH, frameD).translate(side * (openW + frameT) / 2, openH / 2, frameZ);
+  const lintel = new THREE.BoxGeometry(openW + 2 * frameT, frameT, frameD).translate(0, openH + frameT / 2, frameZ);
+  const panel = new THREE.BoxGeometry(openW, openH, DOORS.panelDepth).translate(0, openH / 2, 0.03 - DOORS.panelDepth / 2);
+  return { frames: [jamb(-1), jamb(1), lintel], panel };
+}
+
+// The door zone's centre: `front` m out from the door along its normal (the workflow door has its own front).
+function doorZone(door) {
+  const f = door.front != null ? door.front : DOORS.front;
+  return { x: door.x + door.nx * f, z: door.z + door.nz * f };
+}
+
+// The six halls (plinth, glass facade, roof and one static collider each) and a door for every station, merged by material into
+// five meshes under `extras` (shot mode hides that group, so the PDF pictures keep their old look).
+function buildHallsAndDoors({ extras, world, palette, maxAnisotropy }) {
+  const hall = DOORS.hall;
+  const facadeGeoms = [];
+  const concreteGeoms = [];
+  const frameGeoms = [];
+  const panelGeoms = [];
+  const matGeoms = [];
+  const bodies = [];
+
+  for (const h of Object.values(DOORS.halls)) {
+    const w = h.maxX - h.minX;
+    const d = h.maxZ - h.minZ;
+    const cx = (h.minX + h.maxX) / 2;
+    const cz = (h.minZ + h.maxZ) / 2;
+
+    concreteGeoms.push(new THREE.BoxGeometry(w + 2 * hall.plinthPad, hall.plinth, d + 2 * hall.plinthPad).translate(cx, hall.plinth / 2, cz));
+    facadeGeoms.push(boxWithWorldUV(w, hall.height - hall.plinth, d).translate(cx, hall.plinth + (hall.height - hall.plinth) / 2, cz));
+    concreteGeoms.push(new THREE.BoxGeometry(w + 2 * hall.roofPad, hall.roof, d + 2 * hall.roofPad).translate(cx, hall.height + hall.roof / 2, cz));
+
+    const body = new CANNON.Body({ type: CANNON.Body.STATIC });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(w / 2, hall.height / 2, d / 2)));
+    body.position.set(cx, hall.height / 2, cz);
+    body.updateAABB();
+    world.addBody(body);
+    bodies.push(body);
+  }
+
+  for (const door of Object.values(DOORS.doors)) {
+    const yaw = Math.atan2(door.nx, door.nz);
+    const parts = doorGeometry();
+    for (const g of parts.frames) frameGeoms.push(g.rotateY(yaw).translate(door.x, 0, door.z));
+    panelGeoms.push(parts.panel.rotateY(yaw).translate(door.x, 0, door.z));
+
+    const zone = doorZone(door);
+    const ring = new THREE.TorusGeometry(DOORS.mat.radius, DOORS.mat.tube, 6, 32);
+    ring.rotateX(Math.PI / 2);
+    matGeoms.push(ring.translate(zone.x, DOORS.mat.y, zone.z));
+  }
+
+  function addMerged(geoms, material, { cast = false, receive = false } = {}) {
+    const mesh = new THREE.Mesh(mergeGeometries(geoms), material);
+    mesh.castShadow = cast;
+    mesh.receiveShadow = receive;
+    extras.add(mesh);
+  }
+  addMerged(facadeGeoms, facadeMaterial(palette, maxAnisotropy), { cast: true, receive: true });
+  addMerged(concreteGeoms, new THREE.MeshStandardMaterial({ color: palette.w.concrete, roughness: 0.85 }), { cast: true, receive: true });
+  addMerged(frameGeoms, new THREE.MeshStandardMaterial({ color: palette.w.orange, roughness: 0.5 }), { cast: true });
+  addMerged(panelGeoms, new THREE.MeshStandardMaterial({ color: palette.w.ink, metalness: 0.3, roughness: 0.2 }));
+  addMerged(matGeoms, new THREE.MeshStandardMaterial({ color: palette.w.orange, emissive: palette.w.orange, emissiveIntensity: 0.35 }));
+
+  return { bodies };
+}
+
+export function buildStations({ scene, world, palette, maxAnisotropy, extras }) {
   const padsMap = buildPads(scene, palette);
   const moe = buildExpertGrid(scene, world, palette);
   const ticker = buildTicker(scene, world, palette);
   const robots = buildRobots(scene, world, palette);
   buildRepoBuildings(scene, world, palette, maxAnisotropy);
   const tower = buildTower(scene, world, palette);
+  const halls = buildHallsAndDoors({ extras, world, palette, maxAnisotropy });
+
+  // In STATIONS order, so that the first station whose zone holds the car wins.
+  const doorZones = new Map();
+  STATIONS.forEach((station) => {
+    const door = DOORS.doors[station.id];
+    if (door) doorZones.set(station.id, { door, zone: doorZone(door) });
+  });
 
   function update(t, dt, activeId) {
     padsMap.forEach((entry, id) => {
@@ -447,5 +532,23 @@ export function buildStations({ scene, world, palette, maxAnisotropy }) {
     return tower.slabCount;
   }
 
-  return { update, padAt, padPosition, towerSlabCount };
+  // The checkpoint: keep currentId while the car is within exitRadius of its zone, else the first zone within radius.
+  function doorAt(x, z, currentId) {
+    if (currentId) {
+      const cur = doorZones.get(currentId);
+      if (cur && Math.hypot(x - cur.zone.x, z - cur.zone.z) <= DOORS.exitRadius) return currentId;
+    }
+    for (const [id, entry] of doorZones) {
+      if (Math.hypot(x - entry.zone.x, z - entry.zone.z) <= DOORS.radius) return id;
+    }
+    return null;
+  }
+
+  // Where leaving a building parks the car (the zone centre) and the way it faces (toward the door).
+  function doorPoint(id) {
+    const entry = doorZones.get(id);
+    return entry ? { x: entry.zone.x, z: entry.zone.z, dirX: -entry.door.nx, dirZ: -entry.door.nz } : null;
+  }
+
+  return { update, padAt, padPosition, towerSlabCount, doorAt, doorPoint, hallBodies: () => halls.bodies };
 }

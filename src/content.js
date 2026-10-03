@@ -72,6 +72,8 @@ export const FACTS = {
   L1: 'Title of the EchoNomics details block: 구현 디테일',
   L2: 'Section titles in the 2D view and panels: About · Projects · AI Workflow · GitHub · Career · Contact',
   L4: 'Music toggle labels: 음악 켜기 · 음악 끄기 (Music on · Music off)',
+  L5: 'Prompt at a building door, shown with the E key: 들어가기 · Enter',
+  L6: 'Exit button inside a building: 나가기 · Exit',
   C1: 'GitHub — https://github.com/danielmoon0410',
   C2: 'Email — daniel.moon0410@gmail.com',
   C3: 'Email — daniel.moon0410@snu.ac.kr',
@@ -119,6 +121,8 @@ export const UI_TEXT = {
   letters: 'DANIEL MOON',
   musicOn: MUSIC_LABELS[0],    // label while the music is off (the action it performs)
   musicOff: MUSIC_LABELS[1],   // label while the music is on
+  enter: FACTS.L5.slice('Prompt at a building door, shown with the E key: '.length),   // door prompt, next to the E key cap
+  exit: FACTS.L6.slice('Exit button inside a building: '.length),                     // exit button inside a building
 };
 
 export const SECTIONS = ['about', 'projects', 'workflow', 'github', 'career', 'contact'];

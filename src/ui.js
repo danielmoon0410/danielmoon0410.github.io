@@ -1,6 +1,6 @@
 // index.html overlays: loader, skip/2D view, station panel, on-screen
-// prompt, hint and touch controls. Owns the small view/panel/prompt state
-// machine and wires Esc / E / Enter.
+// prompt, exit button, hint and touch controls. Owns the small
+// view/panel/prompt/interior state machine and wires Esc / E / Enter.
 import { UI_TEXT, SECTIONS, STATIONS } from './content.js';
 import { displayText, sectionTitle, renderLine, renderTitle, renderSectionHeading, renderStationBody } from './render.js';
 
@@ -8,12 +8,13 @@ const state = {
   view: '3d',
   panelId: null,
   promptId: null,
+  interiorId: null,
   canReturn: true,
   loaderVisible: true,
   lastFocus: null,
 };
 
-const handlers = { onStart: null, onViewChange: null };
+const handlers = { onStart: null, onViewChange: null, enter: null, exit: null };
 const stationsById = new Map(STATIONS.map((s) => [s.id, s]));
 
 function $(id) {
@@ -70,9 +71,20 @@ export function initUI({ onStart, onViewChange, touch }) {
   }
   if (closeBtn) closeBtn.addEventListener('click', () => closePanel());
   const prompt = $('prompt');
-  if (prompt) {
-    prompt.addEventListener('click', () => {
-      if (state.promptId) openPanel(state.promptId);
+  if (prompt) prompt.addEventListener('click', () => promptAction());
+
+  const exitBtn = $('exit-btn');
+  if (exitBtn) {
+    exitBtn.textContent = '';
+    const label = document.createElement('span');
+    label.dataset.fact = 'L6';
+    label.textContent = UI_TEXT.exit;
+    const kbd = document.createElement('kbd');
+    kbd.textContent = 'Esc';
+    exitBtn.appendChild(label);
+    exitBtn.appendChild(kbd);
+    exitBtn.addEventListener('click', () => {
+      if (handlers.exit) handlers.exit();
     });
   }
 
@@ -144,9 +156,17 @@ function buildView2D() {
   }
 }
 
+// E, Enter and a tap on #prompt: at a door they enter the building; inside they open the station's panel.
+function promptAction() {
+  if (state.view !== '3d' || state.loaderVisible) return;
+  if (state.interiorId) { if (state.panelId !== state.interiorId) openPanel(state.interiorId); return; }
+  if (state.promptId && handlers.enter) handlers.enter(state.promptId);
+}
+
 function onWindowKeydown(e) {
   if (e.code === 'Escape') {
-    closePanel();
+    if (state.panelId) { closePanel(); return; }
+    if (state.interiorId && state.view === '3d' && handlers.exit) handlers.exit();
     return;
   }
   if (e.code === 'KeyE' || e.code === 'Enter' || e.code === 'NumpadEnter') {
@@ -155,11 +175,7 @@ function onWindowKeydown(e) {
     if (target && typeof target.closest === 'function' && target.closest('button, a, input, textarea, select, summary')) {
       return;
     }
-    if (state.view !== '3d') return;
-    if (state.loaderVisible) return;
-    if (!state.promptId) return;
-    if (state.panelId === state.promptId) return;
-    openPanel(state.promptId);
+    promptAction();
   }
 }
 
@@ -300,31 +316,67 @@ export function getPromptStation() {
   return state.promptId;
 }
 
+// app3d.js: enter(id) walks into a building, exit() walks out (Esc, #exit-btn).
+export function setDoorHandlers({ enter, exit }) {
+  handlers.enter = enter || null;
+  handlers.exit = exit || null;
+}
+
+export function setInterior(id) {
+  state.interiorId = id || null;
+  if (state.interiorId) document.body.dataset.interior = state.interiorId;
+  else delete document.body.dataset.interior;
+  refreshPrompt();
+}
+
+export function getInterior() {
+  return state.interiorId;
+}
+
 function refreshPrompt() {
   const prompt = $('prompt');
-  if (!prompt) return;
+  const exitBtn = $('exit-btn');
+  const ready = state.view === '3d' && !state.loaderVisible;
+  const id = state.interiorId || state.promptId;
 
-  prompt.textContent = '';
-  if (state.promptId) {
-    prompt.dataset.station = state.promptId;
-    const station = stationsById.get(state.promptId);
-    const kbdE = document.createElement('kbd');
-    kbdE.textContent = 'E';
-    const kbdEnter = document.createElement('kbd');
-    kbdEnter.textContent = 'Enter';
-    const span = document.createElement('span');
-    span.lang = 'en';
-    span.textContent = station ? station.label : '';
-    prompt.appendChild(kbdE);
-    prompt.appendChild(kbdEnter);
-    prompt.appendChild(document.createTextNode(' '));
-    prompt.appendChild(span);
-  } else {
-    delete prompt.dataset.station;
+  if (prompt) {
+    prompt.textContent = '';
+    if (id) {
+      prompt.dataset.station = id;
+      const station = stationsById.get(id);
+      const label = document.createElement('span');
+      label.lang = 'en';
+      label.textContent = station ? station.label : '';
+      const kbdE = document.createElement('kbd');
+      kbdE.textContent = 'E';
+      prompt.appendChild(kbdE);
+      if (state.interiorId) {
+        // Inside: E / Enter open the station's panel.
+        prompt.dataset.action = 'panel';
+        const kbdEnter = document.createElement('kbd');
+        kbdEnter.textContent = 'Enter';
+        prompt.appendChild(kbdEnter);
+        prompt.appendChild(document.createTextNode(' '));
+      } else {
+        // At a door: E / Enter / a tap walk in.
+        prompt.dataset.action = 'enter';
+        const enter = document.createElement('span');
+        enter.className = 'prompt-enter';
+        enter.lang = 'ko';
+        enter.dataset.fact = 'L5';
+        enter.textContent = UI_TEXT.enter;
+        prompt.appendChild(enter);
+        label.className = 'prompt-label';
+      }
+      prompt.appendChild(label);
+    } else {
+      delete prompt.dataset.station;
+      delete prompt.dataset.action;
+    }
+    prompt.hidden = !(id && state.panelId !== id && ready);
   }
 
-  const visible = !!state.promptId && state.panelId !== state.promptId && state.view === '3d' && !state.loaderVisible;
-  prompt.hidden = !visible;
+  if (exitBtn) exitBtn.hidden = !(state.interiorId && ready);
 }
 
 export function showHint(b) {

@@ -1,16 +1,18 @@
 // Builds the 3D side: render/physics setup, world + campus + stations, the
-// vehicle, the main loop, camera follow, quality scaling and the pad -> UI
-// bridge.
+// vehicle, the main loop, camera follow, quality scaling, the door -> UI
+// bridge and (run 6) walking into a station's building.
 import * as THREE from 'three';
 import { SEED, SPAWN, CAMERA, RENDER, QUALITY, WORLD_BOUNDS } from './config.js';
 import { mulberry32, readPalette, createRenderer, createScene, createPhysics, buildWorld, setShadowSize, wirePost } from './world.js';
 import { buildCampus } from './campus.js';
 import { buildStations } from './stations.js';
 import { buildLetters } from './letters.js';
+import { buildInterior } from './interior.js';
 import { buildTraffic } from './traffic.js';
 import { createVehicle } from './vehicle.js';
 import { createInput } from './input.js';
-import { getView, setPromptStation, getOpenPanelId, closePanel } from './ui.js';
+import { STATIONS } from './content.js';
+import { getView, setPromptStation, getOpenPanelId, closePanel, setDoorHandlers, setInterior } from './ui.js';
 import { createMinimap } from './minimap.js';
 import { SLOT_NAMES } from './assets.js';
 import { createQualityMeter } from './quality.js';
@@ -33,11 +35,15 @@ export async function buildApp({ canvas, touch, onStep }) {
   const campus = buildCampus({ scene, world, palette, rng, maxAnisotropy });
   await onStep('campus');
 
-  const stations = buildStations({ scene, world, palette, maxAnisotropy });
+  const extras = new THREE.Group();   // run 6: the station halls and doors; shot mode hides the whole group (hideExtras)
+  scene.add(extras);
+  const stations = buildStations({ scene, world, palette, maxAnisotropy, extras });
   await onStep('stations');
 
   const letters = buildLetters({ scene, world, palette, maxAnisotropy });
   await onStep('letters');
+
+  const interior = buildInterior({ scene, palette, maxAnisotropy });
 
   const vehicle = createVehicle({ scene, world, palette });
 
@@ -71,8 +77,24 @@ export async function buildApp({ canvas, touch, onStep }) {
     camera.lookAt(camLook);
   }
 
-  function updateSun() {
-    const p = vehicle.position();
+  // Inside a building the camera follows the walker; same smoothing as the car camera.
+  function snapInteriorCamera() {
+    const { posTarget, lookTarget } = interior.cameraTargets();
+    camPos.copy(posTarget);
+    camLook.copy(lookTarget);
+    camera.position.copy(camPos);
+    camera.lookAt(camLook);
+  }
+
+  function updateInteriorCamera(dt) {
+    const { posTarget, lookTarget } = interior.cameraTargets();
+    camPos.lerp(posTarget, 1 - Math.exp(-CAMERA.posLambda * dt));
+    camLook.lerp(lookTarget, 1 - Math.exp(-CAMERA.lookLambda * dt));
+    camera.position.copy(camPos);
+    camera.lookAt(camLook);
+  }
+
+  function updateSun(p = vehicle.position()) {
     sun.position.set(p.x + RENDER.sunOffset[0], p.y + RENDER.sunOffset[1], p.z + RENDER.sunOffset[2]);
     sun.target.position.set(p.x, p.y, p.z);
     sun.target.updateMatrixWorld();
@@ -145,11 +167,60 @@ export async function buildApp({ canvas, touch, onStep }) {
   const frameStatsOff = { frames: 0, sumMs: 0 };   // the same while render is off (the drive checks)
   let frameHandle = null;
   let lastTime = 0;
-  let prevPadId = null;
+  let prevPadId = null;    // the pad the car is on: drives the ring animation (and poseScene) only
+  let prevDoorId = null;   // the door zone the car is in: the checkpoint
+  let insideId = null;     // the station whose building the visitor is walking in, or null
+  let outdoorSaved = [];   // [object, visible] of every scene child hidden while inside
+
+  function blurActive() {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+  }
+
+  // Walks into the station's building: everything outside (but the lights) is hidden and frozen, the room is skinned for the station.
+  function enterBuilding(id) {
+    const station = STATIONS.find((s) => s.id === id);
+    if (!running || insideId || !station || !stations.doorPoint(id)) return false;
+    closePanel();
+    input.clear();
+    outdoorSaved = scene.children.filter((o) => o !== interior.root && !o.isLight).map((o) => [o, o.visible]);
+    outdoorSaved.forEach(([o]) => { o.visible = false; });
+    interior.enter(station);
+    insideId = id;
+    setInterior(id);
+    snapInteriorCamera();
+    blurActive();
+    return true;
+  }
+
+  // Back outside: the car waits at the door zone's centre, facing the door (park: false leaves it where it was).
+  function exitBuilding({ park = true } = {}) {
+    if (!insideId) return false;
+    const id = insideId;
+    closePanel();
+    input.clear();
+    interior.exit();
+    outdoorSaved.forEach(([o, v]) => { o.visible = v; });
+    outdoorSaved = [];
+    insideId = null;
+    setInterior(null);
+    minimap.resize();   // the minimap is display:none inside, so a window resize in there measured it as 0 px: measure it again now that it shows
+    if (park) {
+      const d = stations.doorPoint(id);
+      vehicle.placeAt(d.x, d.z, d.dirX, d.dirZ);
+    }
+    snapCamera();
+    updateSun();
+    blurActive();
+    return true;
+  }
+  setDoorHandlers({ enter: enterBuilding, exit: () => exitBuilding() });
 
   const input = createInput({
     isActive: () => running && getView() === '3d',
     onReset: () => {
+      if (insideId) return;
       // R returns to the spawn; the flip/fall auto-reset (vehicle.checkAutoReset) still puts the car on the nearest road.
       vehicle.placeAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
       snapCamera();
@@ -162,27 +233,35 @@ export async function buildApp({ canvas, touch, onStep }) {
     lastTime = Math.max(lastTime, now);
     const dt = Math.min(rawDeltaMs / 1000, 0.1);
 
-    vehicle.update(input.state, dt);
-    world.step(1 / 60, dt, 3);
-    vehicle.sync();
-    letters.sync();
-    vehicle.checkAutoReset(dt);
+    if (insideId) {   // inside a building: only the walker, its camera and the sun move; everything outside waits
+      interior.update(input.state, dt);
+      updateInteriorCamera(dt);
+      const w = interior.walker();
+      updateSun({ x: w.x, y: 0, z: w.z });
+    } else {
+      vehicle.update(input.state, dt);
+      world.step(1 / 60, dt, 3);
+      vehicle.sync();
+      letters.sync();
+      vehicle.checkAutoReset(dt);
 
-    const p = vehicle.position();
-    const id = stations.padAt(p.x, p.z, prevPadId);
-    if (id !== prevPadId) {
-      setPromptStation(id);
-      if (prevPadId && getOpenPanelId() === prevPadId) {
-        closePanel();
+      const p = vehicle.position();
+      prevPadId = stations.padAt(p.x, p.z, prevPadId);          // ring animation only (and poseScene); no longer a checkpoint
+      const doorId = stations.doorAt(p.x, p.z, prevDoorId);
+      if (doorId !== prevDoorId) {
+        setPromptStation(doorId);
+        if (prevDoorId && getOpenPanelId() === prevDoorId) {
+          closePanel();
+        }
+        prevDoorId = doorId;
       }
-      prevPadId = id;
-    }
-    stations.update(lastTime / 1000, dt, id);
-    traffic.update(dt);
+      stations.update(lastTime / 1000, dt, prevPadId);
+      traffic.update(dt);
 
-    updateCameraSmooth(dt);
-    updateSun();
-    minimap.update(vehicle.position(), vehicle.forward());
+      updateCameraSmooth(dt);
+      updateSun();
+      minimap.update(vehicle.position(), vehicle.forward());
+    }
 
     if (!qualityHeld && meter.sample(lastTime, rawDeltaMs, document.visibilityState !== 'hidden')) applyQualityLevel(meter.index());
     const bucket = renderEnabled ? frameStatsOn : frameStatsOff;
@@ -249,15 +328,53 @@ export async function buildApp({ canvas, touch, onStep }) {
 
   const internals = {
     placeCarAt(x, z, dirX, dirZ) {
-      // prevPadId is intentionally left as-is: the next frame's padAt() call
+      // A teleport leaves a building first, without parking the car.
+      if (insideId) exitBuilding({ park: false });
+      // prevDoorId is intentionally left as-is: the next frame's doorAt() call
       // re-evaluates actual distance from the real (possibly now far away)
-      // previous pad, so a teleport that lands on no pad still correctly
-      // fires the "pad changed to null" transition instead of silently
+      // previous door zone, so a teleport that lands in no zone still correctly
+      // fires the "door changed to null" transition instead of silently
       // leaving a stale prompt/panel from before the teleport.
       vehicle.placeAt(x, z, dirX, dirZ);
       snapCamera();
     },
     padPosition: (id) => stations.padPosition(id),
+    doorPoint: (id) => stations.doorPoint(id),
+    enterBuilding: (id) => enterBuilding(id),
+    exitBuilding: () => exitBuilding(),
+    hideExtras: () => { extras.visible = false; },   // shot mode: halls, doors (and people) stay out of the PDF pictures
+    extrasVisible: () => extras.visible,
+    textureCount: () => renderer.info.memory.textures,
+    interiorCopy: (id) => {
+      const station = STATIONS.find((s) => s.id === id);
+      return station ? interior.layout(station) : null;
+    },
+    interiorState: () => {
+      const c = camera.position;
+      return {
+        inside: insideId,
+        walker: interior.walker(),
+        bounds: interior.bounds(),
+        camera: { x: c.x, y: c.y, z: c.z },
+        rootVisible: interior.root.visible,
+        outdoorVisible: scene.children.filter((o) => o !== interior.root && !o.isLight && o.visible).length,
+      };
+    },
+    // Static colliders (mass 0, not a hall) whose AABB meets the rectangle. The ground plane and the world walls span more than 400 m (or are infinite) and are skipped.
+    bodiesOverlapping: (minX, maxX, minZ, maxZ) => {
+      const halls = new Set(stations.hallBodies());
+      let n = 0;
+      for (const b of world.bodies) {
+        if (b.mass !== 0 || halls.has(b)) continue;
+        b.updateAABB();
+        const lo = b.aabb.lowerBound;
+        const hi = b.aabb.upperBound;
+        if (![lo.x, hi.x, lo.z, hi.z].every(Number.isFinite)) continue;
+        if (hi.x - lo.x > 400 || hi.z - lo.z > 400) continue;
+        if (lo.x <= maxX && hi.x >= minX && lo.z <= maxZ && hi.z >= minZ) n += 1;
+      }
+      return n;
+    },
     pixelRatio: () => renderer.getPixelRatio(),
     towerSlabCount: () => stations.towerSlabCount(),
     renderOnce: () => composer.render(),

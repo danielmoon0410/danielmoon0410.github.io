@@ -12,6 +12,8 @@ const params = new URLSearchParams(window.location.search);
 const shotId = SHOT.hosts.includes(window.location.hostname) ? params.get('shot') : null;
 const shotMode = shotId !== null;
 if (shotMode) document.body.dataset.shot = shotId;
+// QA hook (run 6): ?enter=<station-id> walks into that building right after the start; never in shot or self-test mode.
+const enterId = SHOT.hosts.includes(window.location.hostname) && !shotMode ? params.get('enter') : null;
 function flagOn(name) {
   return params.get(name) === '1';
 }
@@ -164,6 +166,7 @@ function start() {
     document.body.dataset.ready = 'true';
     if (flags.selftest) runSelftest();
     if (shotMode) runShotMode();
+    else if (enterId && app && !flags.selftest) app.internals.enterBuilding(enterId);
   });
 }
 

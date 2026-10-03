@@ -26,7 +26,7 @@ function nextTick() {
   });
 }
 
-const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'touch-controls', 'panel', 'view-2d', 'minimap', 'music-btn'];
+const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'exit-btn', 'touch-controls', 'panel', 'view-2d', 'minimap', 'music-btn'];
 
 function isUiHidden() {
   return CHROME_IDS.every((id) => {
@@ -57,6 +57,7 @@ export async function runShot({ app, canvas, stationId }) {
     if (!app || !canvas) return fail('webgl unavailable');
     app.internals.holdQuality(true);   // never released: frame() stops sampling the quality meter, so data-quality stays 'high'
     app.internals.fixRenderSize(SHOT.size[0], SHOT.size[1]);   // an exact 1280x720 buffer and camera aspect: a shrinking window can no longer change the capture
+    app.internals.hideExtras();   // halls, doors (and people) stay out of the shots: the PDF pictures do not change
 
     let px;
     let pz;
@@ -120,6 +121,7 @@ export async function runShot({ app, canvas, stationId }) {
     pre.dataset.height = canvas.height;
     pre.dataset.quality = app.quality();
     pre.dataset.uiHidden = uiHidden ? 'true' : 'false';
+    pre.dataset.extras = app.internals.extrasVisible() ? 'shown' : 'hidden';
     // The pair is published only now, so a failure path leaves neither pre in the DOM.
     for (const [id, text] of [['shot-comp', compUrl], ['shot-ref', refUrl]]) {
       const extra = document.createElement('pre');

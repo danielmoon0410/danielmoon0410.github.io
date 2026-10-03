@@ -24,6 +24,7 @@
   --w-tyre: #2a2c30; --w-rim: #c9ced4; --w-car-glass: #3a4856;
   --w-acc-trace: #2e9e86; --w-acc-cyan: #3f8fd2; --w-acc-magenta: #cf5a8e; --w-acc-amber: #e0a13a; --w-acc-violet: #7f69c9;
   --w-flower-red: #e8505b; --w-flower-yellow: #f4c542; --w-flower-violet: #9a6fd0; --w-blossom: #f2b6c6; --w-conifer: #3f7a5a; --w-wood: #b98a5e; --w-pond: #6fa8b8; --w-signal-red: #e2483d; --w-signal-yellow: #f3a534; --w-signal-green: #3cb86f;
+  --w-skin-a: #f1c9a5; --w-skin-b: #c68e63; --w-skin-c: #8d5a3b;
   --w-sign: rgba(255, 255, 255, 0.93);
 }
 
@@ -92,6 +93,7 @@ a {
   cursor: pointer;
 }
 
+body[data-view="2d"] #exit-btn,
 body[data-view="2d"] #skip-2d,
 body[data-view="2d"] #hint,
 body[data-view="2d"] #prompt,
@@ -205,6 +207,55 @@ body.touch #prompt {
 }
 
 body.touch #prompt kbd {
+  display: none;
+}
+
+body.touch #prompt {
+  width: max-content;
+  max-width: calc(100vw - 32px);
+}
+
+.prompt-label {
+  color: var(--c-muted);
+}
+
+/* ---- Exit button (run 6): inside a building, in the slot the hint uses outside ---- */
+#exit-btn {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--c-trace);
+  background: var(--c-panel);
+  color: var(--c-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#exit-btn kbd {
+  background: var(--c-chip);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+body.touch #exit-btn {
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 84px);
+}
+
+body.touch #exit-btn kbd {
+  display: none;
+}
+
+body[data-interior] #hint,
+body[data-interior] #minimap {
   display: none;
 }
 
@@ -635,5 +686,5 @@ body[data-shot] #music-btn {
 }
 
 /* ---- Shot mode (?shot=<station-id>): canvas only ---- */
-body[data-shot] #skip-2d, body[data-shot] #loader, body[data-shot] #hint, body[data-shot] #prompt,
+body[data-shot] #skip-2d, body[data-shot] #loader, body[data-shot] #hint, body[data-shot] #prompt, body[data-shot] #exit-btn,
 body[data-shot] #touch-controls, body[data-shot] #panel, body[data-shot] #view-2d, body[data-shot] #minimap { display: none !important; }

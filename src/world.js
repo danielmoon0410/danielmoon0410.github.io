@@ -41,7 +41,7 @@ export function mulberry32(seed) {
 
 const COLOR_KEYS = ['bg', 'floor', 'grid', 'road', 'trace', 'cyan', 'magenta', 'amber', 'violet', 'chip', 'pin', 'text', 'muted'];
 
-// The 47 --w-* names from css/style.css :root, without the prefix, excluding "sign".
+// The 50 --w-* names from css/style.css :root, without the prefix, excluding "sign".
 const WORLD_KEYS = [
   'sky-top', 'sky-mid', 'sky-horizon', 'ground-far', 'sun', 'white',
   'paving', 'paving-joint', 'inlay', 'road', 'road-line',
@@ -52,6 +52,7 @@ const WORLD_KEYS = [
   'acc-trace', 'acc-cyan', 'acc-magenta', 'acc-amber', 'acc-violet',
   'flower-red', 'flower-yellow', 'flower-violet', 'blossom', 'conifer', 'wood', 'pond',
   'signal-red', 'signal-yellow', 'signal-green',
+  'skin-a', 'skin-b', 'skin-c',
 ];
 
 export function readPalette() {
