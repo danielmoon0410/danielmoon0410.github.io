@@ -8,6 +8,7 @@ import { buildCampus } from './campus.js';
 import { buildStations } from './stations.js';
 import { buildLetters } from './letters.js';
 import { buildInterior } from './interior.js';
+import { buildPeople } from './people.js';
 import { buildTraffic } from './traffic.js';
 import { createVehicle } from './vehicle.js';
 import { createInput } from './input.js';
@@ -35,7 +36,8 @@ export async function buildApp({ canvas, touch, onStep }) {
   const campus = buildCampus({ scene, world, palette, rng, maxAnisotropy });
   await onStep('campus');
 
-  const extras = new THREE.Group();   // run 6: the station halls and doors; shot mode hides the whole group (hideExtras)
+  const extras = new THREE.Group();   // run 6: the station halls and doors, run 5b: the people; shot mode hides the whole group (hideExtras)
+  extras.name = 'extras';
   scene.add(extras);
   const stations = buildStations({ scene, world, palette, maxAnisotropy, extras });
   await onStep('stations');
@@ -44,6 +46,18 @@ export async function buildApp({ canvas, touch, onStep }) {
   await onStep('letters');
 
   const interior = buildInterior({ scene, palette, maxAnisotropy });
+
+  // World point -> css pixels of the canvas (y down); z is the ndc depth (< 1 in front of the far plane).
+  function projectCss(x, y, z) {
+    camera.updateMatrixWorld();
+    const v = new THREE.Vector3(x, y, z).project(camera);
+    return { x: ((v.x + 1) / 2) * canvas.clientWidth, y: ((1 - v.y) / 2) * canvas.clientHeight, z: v.z };
+  }
+
+  const people = buildPeople({ extras, palette, landscape: campus.landscapeInfo(), project: projectCss });
+
+  // A pad's sign fades while it hangs between the camera and the car (stations.fadeSigns). Shot mode never does it: the shots and the PDF stay as they are.
+  const fadeSignsOn = document.body.dataset.shot === undefined;
 
   const vehicle = createVehicle({ scene, world, palette });
 
@@ -211,6 +225,7 @@ export async function buildApp({ canvas, touch, onStep }) {
       vehicle.placeAt(d.x, d.z, d.dirX, d.dirZ);
     }
     snapCamera();
+    if (fadeSignsOn) stations.fadeSigns(camera, vehicle.position(), 0);   // dt 0 snaps: no sign flashes over the first frame outside
     updateSun();
     blurActive();
     return true;
@@ -257,8 +272,12 @@ export async function buildApp({ canvas, touch, onStep }) {
       }
       stations.update(lastTime / 1000, dt, prevPadId);
       traffic.update(dt);
+      const f = vehicle.forward();
+      people.update(dt, { x: p.x, z: p.z, fx: f.x, fz: f.z, speed: vehicle.forwardSpeed() }, traffic.state());
 
       updateCameraSmooth(dt);
+      people.placeBubbles();
+      if (fadeSignsOn) stations.fadeSigns(camera, p, dt);
       updateSun();
       minimap.update(vehicle.position(), vehicle.forward());
     }
@@ -457,12 +476,13 @@ export async function buildApp({ canvas, touch, onStep }) {
     trafficState: () => traffic.state(),
     trafficSetTime: (t) => traffic.setTime(t),
     trafficInfo: () => traffic.info(),
-    // World point -> css pixels of the canvas (y down); z is the ndc depth (< 1 in front of the far plane).
-    project: (x, y, z) => {
-      camera.updateMatrixWorld();
-      const v = new THREE.Vector3(x, y, z).project(camera);
-      return { x: ((v.x + 1) / 2) * canvas.clientWidth, y: ((1 - v.y) / 2) * canvas.clientHeight, z: v.z };
-    },
+    project: projectCss,
+    peopleInfo: () => people.info(),
+    peoplePoints: () => people.points(),
+    peopleSim: (seconds, dt) => people.simulate(seconds, dt),
+    peopleReset: () => people.reset(),
+    signsAtCentre: () => stations.signsAtCentre(camera),   // ids of the pad signs that are still visible and cover the screen centre
+    signsInTheWay: () => stations.signsInTheWay(camera, vehicle.position()),   // ... and those still visible while nearer than the car and over it or the centre
   };
 
   return { start, pause, resume, carPosition, quality, internals };

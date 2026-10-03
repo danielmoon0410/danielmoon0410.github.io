@@ -93,6 +93,7 @@ a {
   cursor: pointer;
 }
 
+body[data-view="2d"] #bubbles,
 body[data-view="2d"] #exit-btn,
 body[data-view="2d"] #skip-2d,
 body[data-view="2d"] #hint,
@@ -255,8 +256,30 @@ body.touch #exit-btn kbd {
 }
 
 body[data-interior] #hint,
-body[data-interior] #minimap {
+body[data-interior] #minimap,
+body[data-interior] #bubbles {
   display: none;
+}
+
+/* ---- Speech bubbles (run 5b): people.js puts a few <p class="bubble"> in #bubbles and places them over the people the car bumps ---- */
+#bubbles {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+}
+
+.bubble {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--c-trace);
+  background: var(--c-panel);
+  color: var(--c-text);
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 
 /* ---- Touch controls -------------------------------------------------------- */
@@ -686,5 +709,5 @@ body[data-shot] #music-btn {
 }
 
 /* ---- Shot mode (?shot=<station-id>): canvas only ---- */
-body[data-shot] #skip-2d, body[data-shot] #loader, body[data-shot] #hint, body[data-shot] #prompt, body[data-shot] #exit-btn,
+body[data-shot] #skip-2d, body[data-shot] #loader, body[data-shot] #hint, body[data-shot] #prompt, body[data-shot] #exit-btn, body[data-shot] #bubbles,
 body[data-shot] #touch-controls, body[data-shot] #panel, body[data-shot] #view-2d, body[data-shot] #minimap { display: none !important; }

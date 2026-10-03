@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY, SIGNS, DOORS } from './config.js';
+import { PADS, PAD_RADIUS, PAD_EXIT_RADIUS, SCENERY, SIGNS, DOORS, SIGN_FADE } from './config.js';
 import { STATIONS, ROBOT_LABELS, TICKER_LINES } from './content.js';
 import { visibleCareer } from './render.js';
 import { statusLightMaterial } from './world.js';
@@ -550,5 +550,61 @@ export function buildStations({ scene, world, palette, maxAnisotropy, extras }) 
     return entry ? { x: entry.zone.x, z: entry.zone.z, dirX: -entry.door.nx, dirZ: -entry.door.nz } : null;
   }
 
-  return { update, padAt, padPosition, towerSlabCount, doorAt, doorPoint, hallBodies: () => halls.bodies };
+  // ---- A pad's hovering sign fades while it hangs between the camera and the car ----
+  // After leaving a building the car stands at the door zone and the camera snaps 10.5 m behind it, which can put a pad's sign right
+  // in front of the lens. Everything is in the camera's ndc units: a sign is a camera-facing 8 x 2 m rectangle.
+  const viewTmp = new THREE.Vector3();
+
+  function inView(camera, x, y, z) {   // camera space: the depth, the ndc offset of the point, and the ndc scale of one metre at that depth
+    viewTmp.set(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+    const depth = -viewTmp.z;
+    const pe = camera.projectionMatrix.elements;
+    const k = depth > 1e-6 ? 1 / depth : 0;
+    return { depth, nx: pe[0] * viewTmp.x * k, ny: pe[5] * viewTmp.y * k, kx: pe[0] * k, ky: pe[5] * k };
+  }
+
+  function signRects(camera) {
+    camera.updateMatrixWorld();
+    const rects = [];
+    padsMap.forEach((entry, id) => {
+      const sign = entry.sign;
+      const v = inView(camera, sign.position.x, sign.position.y, sign.position.z);
+      const hw = (v.kx * sign.scale.x) / 2;
+      const hh = (v.ky * sign.scale.y) / 2;
+      const ahead = v.depth > camera.near;
+      rects.push({ id, sign, depth: v.depth, nx: v.nx, ny: v.ny, hw, hh, ahead, atCentre: ahead && Math.abs(v.nx) <= hw && Math.abs(v.ny) <= hh });
+    });
+    return rects;
+  }
+
+  // The pad signs, each with `inWay`: it is nearer than the car and covers the car's box or the screen centre. The car is { x, y, z }.
+  function signsWithWay(camera, car) {
+    const rects = signRects(camera);
+    const c = inView(camera, car.x, car.y, car.z);
+    const halfX = c.kx * SIGN_FADE.carHalf[0];
+    const halfY = c.ky * SIGN_FADE.carHalf[1];
+    for (const r of rects) {
+      const onCar = Math.abs(r.nx - c.nx) <= r.hw + halfX && Math.abs(r.ny - c.ny) <= r.hh + halfY;
+      r.inWay = r.ahead && r.depth < c.depth && (r.atCentre || onCar);
+    }
+    return rects;
+  }
+
+  // dt > 0 eases each sign toward its target opacity (0 while it is in the way, else 1); dt 0 snaps.
+  function fadeSigns(camera, car, dt) {
+    const k = dt > 0 ? 1 - Math.exp(-SIGN_FADE.rate * dt) : 1;
+    for (const r of signsWithWay(camera, car)) r.sign.material.opacity += ((r.inWay ? 0 : 1) - r.sign.material.opacity) * k;
+  }
+
+  // The ids of the pad signs that are still visible (opacity over SIGN_FADE.hiddenBelow) and cover the screen centre, whatever their depth.
+  function signsAtCentre(camera) {
+    return signRects(camera).filter((r) => r.atCentre && r.sign.material.opacity > SIGN_FADE.hiddenBelow).map((r) => r.id);
+  }
+
+  // The ids of the pad signs that are still visible and in the way of the car (what fadeSigns would hide).
+  function signsInTheWay(camera, car) {
+    return signsWithWay(camera, car).filter((r) => r.inWay && r.sign.material.opacity > SIGN_FADE.hiddenBelow).map((r) => r.id);
+  }
+
+  return { update, padAt, padPosition, towerSlabCount, doorAt, doorPoint, hallBodies: () => halls.bodies, fadeSigns, signsAtCentre, signsInTheWay };
 }

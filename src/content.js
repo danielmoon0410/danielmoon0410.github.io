@@ -71,6 +71,7 @@ export const FACTS = {
   H5: 'SHOW & PROVE — 말보다 작동하는 결과물로.',
   L1: 'Title of the EchoNomics details block: 구현 디테일',
   L2: 'Section titles in the 2D view and panels: About · Projects · AI Workflow · GitHub · Career · Contact',
+  L3: 'What a pedestrian shouts when the car bumps into them: 조심하세요! · Be careful!',
   L4: 'Music toggle labels: 음악 켜기 · 음악 끄기 (Music on · Music off)',
   L5: 'Prompt at a building door, shown with the E key: 들어가기 · Enter',
   L6: 'Exit button inside a building: 나가기 · Exit',
@@ -123,6 +124,7 @@ export const UI_TEXT = {
   musicOff: MUSIC_LABELS[1],   // label while the music is on
   enter: FACTS.L5.slice('Prompt at a building door, shown with the E key: '.length),   // door prompt, next to the E key cap
   exit: FACTS.L6.slice('Exit button inside a building: '.length),                     // exit button inside a building
+  careful: FACTS.L3.slice('What a pedestrian shouts when the car bumps into them: '.length),   // a pedestrian's speech bubble when the car bumps into them
 };
 
 export const SECTIONS = ['about', 'projects', 'workflow', 'github', 'career', 'contact'];

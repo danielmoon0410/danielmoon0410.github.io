@@ -331,3 +331,25 @@ export const PERSON = {
   torso: [0.42, 0.6, 0.24], shoulderY: 1.42, armLen: 0.6, arm: [0.11, 0.12], armX: 0.27,
   headR: 0.13, headY: 1.66,
 };
+
+// run 5b (people.js). Every spot is where no tree or bed can stand (plazas, the paved east corridor, the pond-bridge
+// corridors, the junction verges); people:place checks it. People have no physics bodies. yaw 0 faces +z.
+export const PEOPLE = {
+  walkSpeed: 1.4, cycleSpeed: 4, turnRate: 4, stride: 2.2, swing: 0.55, crossMargin: 0.5,
+  junctionLoop: [[5, 7], [-5, 7], [-5, 5], [-7, 5], [-7, -5], [-5, -5], [-5, -7], [5, -7], [5, -5], [7, -5], [7, 5], [5, 5]],   // offsets from each TRAFFIC junction
+  crossings: { 0: 'z', 3: 'x', 6: 'z', 9: 'x' },   // the loop segment starting at this vertex crosses this road axis (10 m)
+  crossersStart: [0, 6],                          // two crossers per junction
+  bridgeWalker: { dx: -1, pad: 4 },               // one per bridge: x = bridge.x + dx, back and forth from zEnd - pad to zStart + pad
+  groups: [{ x: -12.5, z: 6, n: 3 }, { x: -39, z: -107, n: 4 }, { x: 104, z: -268, n: 3 }], groupRadius: 0.9,
+  picnics: [{ x: -51, z: -63, n: 3 }, { x: 92, z: -315, n: 2 }], picnicRadius: 1.35, blanket: [2.2, 1.6],
+  benches: [{ x: -19, z: 22, yaw: Math.PI / 2 }, { x: -40, z: -594, yaw: 0 }, { x: 40, z: -594, yaw: 0 }], coderGap: 1,
+  loops: { corridor: [[150, -235], [150, -145], [154, -145], [154, -235]], plaza: [[-24, -572], [24, -572], [24, -590], [-24, -590]] },
+  cyclists: [{ loop: 'corridor', start: 0 }, { loop: 'corridor', start: 0.5 }, { loop: 'plaza', start: 0 }],
+  bump: { minSpeed: 1, knockback: 1.2, outS: 0.25, backS: 1.5, hop: 0.25, hopS: 0.35, bubbleS: 2.5, cooldownS: 3, maxBubbles: 3, bubbleY: 2.1 },
+  looks: { shirts: ['acc-cyan', 'acc-magenta', 'acc-amber', 'acc-violet', 'orange', 'white', 'flower-red', 'steel'], pants: ['ink', 'ink-muted', 'steel', 'trunk'], skins: ['skin-a', 'skin-b', 'skin-c'] },
+};
+
+// stations.js fadeSigns (run 6 follow-up): a pad's hovering sign fades while it hangs between the camera and the car, i.e. while it is nearer
+// than the car and covers the car or the screen centre. rate: 1/s of the exponential fade; carHalf: half size of the car's box (m) used to
+// project it; hiddenBelow: an opacity under this counts as gone (signsAtCentre).
+export const SIGN_FADE = { rate: 10, carHalf: [2, 0.8], hiddenBelow: 0.05 };

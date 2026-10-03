@@ -4,7 +4,7 @@ import { STATIONS, SECTIONS, CAREER, CV, FACTS, UI_TEXT } from './content.js';
 import { displayText, sectionTitle, titleText, visibleCareer } from './render.js';
 import {
   SPAWN, VEHICLE, CAMERA, TEST_LANE, WORLD_BOUNDS, ASSET_SLOTS, MINIMAP, QUALITY, MAX_PIXEL_RATIO,
-  LETTERS, PADS, PAD_RADIUS, ROADS, ROAD_WIDTH, CAMPUS, SCENERY_ZONES, LANDSCAPE, TRAFFIC, MUSIC, DOORS, INTERIOR, SCENERY,
+  LETTERS, PADS, PAD_RADIUS, ROADS, ROAD_WIDTH, CAMPUS, SCENERY_ZONES, LANDSCAPE, TRAFFIC, MUSIC, DOORS, INTERIOR, SCENERY, PEOPLE,
 } from './config.js';
 import { nearestRoadPoint } from './world.js';
 import { renderPixelRatio } from './quality.js';
@@ -719,6 +719,15 @@ export async function runSelfTest({ api, app, ui, music }) {
           const dist = Math.hypot(pos.x - d.x, pos.z - d.z);
           assert(dist <= 0.5, `the car is ${dist.toFixed(2)} m from the door point after leaving`);
           assert(!prompt.hidden && prompt.dataset.action === 'enter', 'prompt not visible again at the door after leaving');
+          // The camera snaps 10.5 m behind the parked car, which can put the pad's hovering sign right in front of the lens: it must have faded
+          // (no sign over the screen centre, none between the camera and the car). Gives the fade a few frames to settle before it fails.
+          const inTheWay = () => Array.from(new Set([...app.internals.signsAtCentre(), ...app.internals.signsInTheWay()]));
+          let covering = inTheWay();
+          for (let i = 0; i < 15 && covering.length > 0; i++) {
+            await frames(1);
+            covering = inTheWay();
+          }
+          assert(covering.length === 0, `after leaving ${id}, the sign of ${covering.join(', ')} still covers the screen centre or the car`);
         } finally {
           leaveIfInside();
           app.internals.placeCarAt(SPAWN.x, SPAWN.z, SPAWN.dirX, SPAWN.dirZ);
@@ -2015,6 +2024,171 @@ export async function runSelfTest({ api, app, ui, music }) {
         return `vw=${window.innerWidth} vh=${window.innerHeight}`;
       } finally {
         leaveIfInside();
+        await toSpawn();
+      }
+    });
+
+    // ---- Run 5b: people ----------------------------------------------------------------------------------------------
+    await check('people:counts', () => {
+      const info = app.internals.peopleInfo();
+      const want = { cross: 6, bridge: 2, talk: 10, picnic: 5, code: 6, cycle: 3 };
+      const got = {};
+      info.people.forEach((p) => { got[p.kind] = (got[p.kind] || 0) + 1; });
+      assert(info.people.length === 32, `${info.people.length} people, expected 32`);
+      for (const [kind, n] of Object.entries(want)) assert(got[kind] === n, `${got[kind]} ${kind} people, expected ${n}`);
+      assert(Object.keys(got).length === Object.keys(want).length, `unexpected kinds: ${Object.keys(got)}`);
+
+      const seen = {};
+      let outside = 0;
+      app.internals.forEachMesh((mesh) => {
+        const tag = mesh.userData.people;
+        if (!tag) return;
+        seen[tag] = mesh.isInstancedMesh ? mesh.count : 1;
+        let o = mesh;
+        while (o && o.name !== 'extras') o = o.parent;
+        if (!o) outside += 1;
+      });
+      const wantMeshes = { torso: 32, head: 32, leg: 64, arm: 64, bike: 3, props: 1 };
+      for (const [tag, n] of Object.entries(wantMeshes)) assert(seen[tag] === n, `the ${tag} mesh has ${seen[tag]} instance(s), expected ${n}`);
+      assert(outside === 0, `${outside} people mesh(es) are not inside the extras group`);
+      return `people=${info.people.length} cross=${got.cross} bridge=${got.bridge} talk=${got.talk} picnic=${got.picnic} code=${got.code} cycle=${got.cycle}`;
+    });
+
+    // Every spot a person can be at (anchors, blankets, bench centres, a sample every 0.5 m along every route) must be clear of trees, beds,
+    // colliders and roads; the crossing samples must lie on a crosswalk.
+    await check('people:place', () => {
+      const land = app.internals.landscapeInfo();
+      const crosswalks = app.internals.trafficInfo().crosswalks;
+      const pts = app.internals.peoplePoints();
+      const half = ROAD_WIDTH / 2;
+      const roadDist = (x, z, r) => {
+        const [x1, z1, x2, z2] = r;
+        const dx = x2 - x1;
+        const dz = z2 - z1;
+        const len2 = dx * dx + dz * dz;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / len2)) : 0;
+        return Math.hypot(x - (x1 + dx * t), z - (z1 + dz * t));
+      };
+      const bad = (p, msg) => { throw new Error(`${p.kind} point (${p.x.toFixed(2)}, ${p.z.toFixed(2)}) ${msg}`); };
+      let minTree = Infinity;
+      let minBed = Infinity;
+      for (const p of pts) {
+        for (const t of land.trees) {
+          const d = Math.hypot(p.x - t.x, p.z - t.z);
+          if (d < minTree) minTree = d;
+          if (d < 1.2) bad(p, `is ${d.toFixed(2)} m from a tree trunk < 1.2`);
+        }
+        for (const b of land.beds) {
+          const d = Math.hypot(p.x - b.x, p.z - b.z) - b.r;
+          if (d < minBed) minBed = d;
+          if (d < 0.5) bad(p, `is ${d.toFixed(2)} m from a bed's edge < 0.5`);
+        }
+        if (p.bridge) {
+          if (!land.bridges.some((b) => Math.abs(p.x - b.x) <= b.width / 2 - 0.6 + 1e-6)) bad(p, 'is not within a bridge deck width minus 0.6 m');
+        } else {
+          const n = app.internals.bodiesOverlapping(p.x - 0.4, p.x + 0.4, p.z - 0.4, p.z + 0.4);
+          if (n !== 0) bad(p, `stands inside ${n} static collider(s)`);
+        }
+        if (p.crossing) {
+          const onWalk = crosswalks.some((w) => (w.road === 'z'
+            ? p.x >= w.minX - 2.5 && p.x <= w.maxX + 2.5 && p.z >= w.minZ && p.z <= w.maxZ
+            : p.x >= w.minX && p.x <= w.maxX && p.z >= w.minZ - 2.5 && p.z <= w.maxZ + 2.5));
+          if (!onWalk) bad(p, 'is a crossing point outside every crosswalk widened by 2.5 m');
+        } else {
+          for (const r of ROADS) {
+            const d = roadDist(p.x, p.z, r);
+            if (d < half + 0.3) bad(p, `is ${d.toFixed(2)} m from a road < ${half + 0.3}`);
+          }
+        }
+      }
+      return `points=${pts.length} minTree=${minTree.toFixed(2)} minBed=${minBed.toFixed(2)}`;
+    });
+
+    // Replays three signal cycles of the crossers: none may be on a road's crosswalk while that road's cars do not see red.
+    await check('people:cross', () => {
+      const info = app.internals.trafficInfo();
+      const half = ROAD_WIDTH / 2;
+      const r = app.internals.peopleSim(78, 0.05);
+      assert(r.steps.length === 1560, `${r.steps.length} steps, expected 1560`);
+      let violations = 0;
+      let waits = 0;
+      let firstViolation = '';
+      const entries = info.junctions.map(() => ({ x: 0, z: 0 }));
+      const wasOn = {};
+      for (const step of r.steps) {
+        step.crossers.forEach((c, i) => {
+          const j = info.junctions[c.j];
+          if (c.state === 'wait') waits += 1;
+          for (const axis of ['z', 'x']) {
+            const on = info.crosswalks.some((w) => w.junction === j.id && w.road === axis && (axis === 'z'
+              ? Math.abs(c.x - j.x) < half && c.z >= w.minZ && c.z <= w.maxZ
+              : Math.abs(c.z - j.z) < half && c.x >= w.minX && c.x <= w.maxX));
+            if (on && step[axis] !== 'red') {
+              violations += 1;
+              if (!firstViolation) firstViolation = `t=${step.t.toFixed(2)} ${j.id} road ${axis} is ${step[axis]}`;
+            }
+            if (on && !wasOn[`${i}${axis}`]) entries[c.j][axis] += 1;
+            wasOn[`${i}${axis}`] = on;
+          }
+        });
+      }
+      assert(violations === 0, `${violations} step(s) with a crosser on a crosswalk while its road was not red (first: ${firstViolation})`);
+      info.junctions.forEach((j, n) => {
+        assert(entries[n].x >= 1 && entries[n].z >= 1, `${j.id}: entries onto road x / z were ${entries[n].x} / ${entries[n].z}, expected at least 1 each`);
+      });
+      assert(waits >= 1, 'no crosser ever waited');
+      return `steps=${r.steps.length} violations=${violations} ${info.junctions.map((j, n) => `j${n + 1}=${entries[n].x}/${entries[n].z}`).join(' ')} waits=${waits}`;
+    });
+
+    // Drives into the first talking group: somebody must react (hop, knock-back, arms up) and show the L3 bubble for PEOPLE.bump.bubbleS.
+    await check('people:bump', async () => {
+      const B = PEOPLE.bump;
+      const group0 = () => app.internals.peopleInfo().people.filter((p) => p.kind === 'talk').slice(0, PEOPLE.groups[0].n);
+      const shown = () => Array.from(document.querySelectorAll('#bubbles .bubble')).filter((el) => !el.hidden && window.getComputedStyle(el).display !== 'none');
+      try {
+        app.internals.peopleReset();
+        app.internals.placeCarAt(-12.5, 18, 0, -1);
+        await waitSim(0.3, 3000);
+
+        dispatchKey('keydown', 'KeyW');
+        const t0 = performance.now();
+        const s0 = app.internals.simTime();
+        let tHit = null;
+        while (app.internals.simTime() - s0 < 4) {
+          if (group0().some((p) => p.reacting)) {
+            tHit = app.internals.simTime() - s0;
+            break;
+          }
+          if (performance.now() - t0 >= 15000) throw new Error(`physics advanced only ${(app.internals.simTime() - s0).toFixed(2)} s in 15000 ms`);
+          await nextTick();
+        }
+        dispatchKey('keyup', 'KeyW');
+
+        dispatchKey('keydown', 'Space');
+        const t1 = performance.now();
+        const s1 = app.internals.simTime();
+        let knock = 0;
+        let bubble = null;
+        for (;;) {
+          for (const p of group0()) if (p.reacting && p.knock > knock) knock = p.knock;
+          const now = shown();
+          if (now.length > 0 && bubble === null) bubble = now[0].textContent;
+          if (app.internals.simTime() - s1 >= 1) break;
+          if (performance.now() - t1 >= 5000) throw new Error(`physics advanced only ${(app.internals.simTime() - s1).toFixed(2)} s in 5000 ms`);
+          await nextTick();
+        }
+        assert(tHit !== null, 'nobody in the first talking group reacted within 4 s of driving into it');
+        assert(knock >= 0.5, `the knock-back reached only ${knock.toFixed(2)} m, expected at least 0.5`);
+        assert(bubble === UI_TEXT.careful, `the bubble text was "${bubble}", expected "${UI_TEXT.careful}"`);
+
+        await waitMs(B.bubbleS * 1000 + 600);
+        const left = shown().length;
+        assert(left === 0, `${left} bubble(s) still visible ${(B.bubbleS + 0.6).toFixed(1)} s later`);
+        return `tHit=${tHit.toFixed(2)} knock=${knock.toFixed(2)} bubble="${bubble}" hidden=1`;
+      } finally {
+        dispatchKey('keyup', 'KeyW');
+        dispatchKey('keyup', 'Space');
+        app.internals.peopleReset();
         await toSpawn();
       }
     });

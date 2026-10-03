@@ -26,7 +26,7 @@ function nextTick() {
   });
 }
 
-const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'exit-btn', 'touch-controls', 'panel', 'view-2d', 'minimap', 'music-btn'];
+const CHROME_IDS = ['skip-2d', 'loader', 'hint', 'prompt', 'exit-btn', 'bubbles', 'touch-controls', 'panel', 'view-2d', 'minimap', 'music-btn'];
 
 function isUiHidden() {
   return CHROME_IDS.every((id) => {
